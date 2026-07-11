@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// dados do usuário (`$XDG_DATA_HOME/evervox/gravacoes`, ou
 /// `~/.local/share/evervox/gravacoes`) e retorna o caminho do arquivo.
 pub fn salvar(audio: &AudioGravado) -> anyhow::Result<PathBuf> {
-    let dir = diretorio_gravacoes()?;
+    let dir = crate::xdg::resolver("XDG_DATA_HOME", ".local/share")?.join("evervox/gravacoes");
     std::fs::create_dir_all(&dir)?;
 
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
@@ -27,13 +27,4 @@ pub fn salvar(audio: &AudioGravado) -> anyhow::Result<PathBuf> {
     writer.finalize()?;
 
     Ok(caminho)
-}
-
-fn diretorio_gravacoes() -> anyhow::Result<PathBuf> {
-    if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(xdg_data_home).join("evervox/gravacoes"));
-    }
-    let home = std::env::var("HOME")
-        .map_err(|_| anyhow::anyhow!("HOME não definido: não sei onde salvar a Gravação"))?;
-    Ok(PathBuf::from(home).join(".local/share/evervox/gravacoes"))
 }

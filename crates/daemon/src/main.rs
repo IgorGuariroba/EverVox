@@ -1,7 +1,14 @@
 mod audio;
+mod clipboard;
+mod config;
+mod engine_whisper;
 mod microfone;
+mod modelo;
 mod wav;
+mod xdg;
 
+use clipboard::ClipboardWlCopy;
+use engine_whisper::EngineWhisper;
 use evervox_core::{dbus, ErroMicrofone, Feedback, Machine, ResultadoToggle};
 use microfone::MicrofoneCpal;
 use notify_rust::Notification;
@@ -9,10 +16,11 @@ use std::process::Command;
 use tokio::sync::Mutex;
 use zbus::{connection, interface};
 
-/// Feedback sonoro real: eventos do freedesktop sound theme via canberra.
-struct SoundFeedback;
+/// Feedback sonoro e por notificação real do Ditado completo: sons do
+/// freedesktop sound theme via canberra e notificações via `notify-rust`.
+struct DaemonFeedback;
 
-impl SoundFeedback {
+impl DaemonFeedback {
     fn play(&self, event_id: &str) {
         if let Err(erro) = Command::new("canberra-gtk-play")
             .arg("-i")
@@ -22,9 +30,33 @@ impl SoundFeedback {
             eprintln!("evervox-daemon: falha ao tocar som '{event_id}': {erro}");
         }
     }
+
+    fn notificar(&self, corpo: &str, urgencia: notify_rust::Urgency) {
+        if let Err(erro) = Notification::new()
+            .summary("EverVox")
+            .body(corpo)
+            .urgency(urgencia)
+            .show()
+        {
+            eprintln!("evervox-daemon: falha ao notificar: {erro}");
+        }
+    }
 }
 
-impl Feedback for SoundFeedback {
+/// Tamanho máximo do trecho da Transcrição exibido na notificação de
+/// conclusão: notificações não são o lugar para o Ditado inteiro, e o texto
+/// completo já está no clipboard.
+const TAMANHO_MAXIMO_NA_NOTIFICACAO: usize = 80;
+
+fn resumir_para_notificacao(texto: &str) -> String {
+    if texto.chars().count() <= TAMANHO_MAXIMO_NA_NOTIFICACAO {
+        return texto.to_string();
+    }
+    let resumo: String = texto.chars().take(TAMANHO_MAXIMO_NA_NOTIFICACAO).collect();
+    format!("{resumo}…")
+}
+
+impl Feedback for DaemonFeedback {
     fn iniciou_gravacao(&mut self) {
         self.play("message-new-instant");
     }
@@ -32,10 +64,33 @@ impl Feedback for SoundFeedback {
     fn encerrou_gravacao(&mut self) {
         self.play("complete");
     }
+
+    fn concluiu_ditado(&mut self, texto: &str) {
+        let resumo = resumir_para_notificacao(texto);
+        self.notificar(
+            &format!("Ditado concluído: \"{resumo}\""),
+            notify_rust::Urgency::Normal,
+        );
+    }
+
+    fn ditado_silencioso(&mut self) {
+        self.notificar(
+            "Nenhuma fala detectada no Ditado.",
+            notify_rust::Urgency::Low,
+        );
+    }
+
+    fn falha_ditado(&mut self, mensagem: &str) {
+        eprintln!("evervox-daemon: {mensagem}");
+        self.notificar(
+            &format!("O Ditado falhou: {mensagem}"),
+            notify_rust::Urgency::Normal,
+        );
+    }
 }
 
 struct DaemonService {
-    machine: Mutex<Machine<SoundFeedback, MicrofoneCpal>>,
+    machine: Mutex<Machine<DaemonFeedback, MicrofoneCpal, EngineWhisper, ClipboardWlCopy>>,
 }
 
 #[interface(name = "com.evervox.Daemon1")]
@@ -109,14 +164,40 @@ async fn avisar_beep_indisponivel() {
         .await;
 }
 
+/// Carrega a config, garante o modelo local em disco e carrega o Engine
+/// whisper.cpp na memória — tudo bloqueante, feito uma única vez na
+/// inicialização do Daemon.
+fn preparar_engine() -> anyhow::Result<EngineWhisper> {
+    let config = config::carregar_ou_criar()?;
+    eprintln!(
+        "evervox-daemon: config carregada (idioma={}, modelo={})",
+        config.idioma, config.modelo_local
+    );
+    let caminho_modelo = modelo::garantir(&config.modelo_local)?;
+    eprintln!("evervox-daemon: carregando modelo whisper.cpp na memória...");
+    let engine = EngineWhisper::carregar(&caminho_modelo, &config.idioma)?;
+    eprintln!("evervox-daemon: modelo carregado, Engine local pronto.");
+    Ok(engine)
+}
+
 #[tokio::main]
 async fn main() -> zbus::Result<()> {
     if !canberra_disponivel() {
         avisar_beep_indisponivel().await;
     }
 
+    let engine = preparar_engine().unwrap_or_else(|erro| {
+        eprintln!("evervox-daemon: falha fatal ao preparar o Engine local: {erro}");
+        std::process::exit(1);
+    });
+
     let service = DaemonService {
-        machine: Mutex::new(Machine::new(SoundFeedback, MicrofoneCpal::default())),
+        machine: Mutex::new(Machine::new(
+            DaemonFeedback,
+            MicrofoneCpal::default(),
+            engine,
+            ClipboardWlCopy,
+        )),
     };
 
     let connection = connection::Builder::session()?
@@ -143,4 +224,25 @@ async fn main() -> zbus::Result<()> {
     );
     std::future::pending::<()>().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resumo_curto_fica_intacto() {
+        assert_eq!(resumir_para_notificacao("oi mundo"), "oi mundo");
+    }
+
+    #[test]
+    fn resumo_longo_e_truncado_com_elipse() {
+        let texto = "a".repeat(TAMANHO_MAXIMO_NA_NOTIFICACAO + 10);
+        let resumo = resumir_para_notificacao(&texto);
+        assert_eq!(
+            resumo.chars().count(),
+            TAMANHO_MAXIMO_NA_NOTIFICACAO + 1 // +1 pelo caractere de elipse
+        );
+        assert!(resumo.ends_with('…'));
+    }
 }
