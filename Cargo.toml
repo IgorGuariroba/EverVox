@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/daemon", "crates/cli"]
+
+[workspace.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+notify-rust = { version = "4", default-features = false, features = ["z-with-tokio"] }
+anyhow = "1"

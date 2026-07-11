@@ -1,0 +1,15 @@
+[package]
+name = "evervox-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "evervox-daemon"
+path = "src/main.rs"
+
+[dependencies]
+evervox-core = { path = "../core" }
+zbus = { workspace = true }
+tokio = { workspace = true }
+notify-rust = { workspace = true }
+anyhow = { workspace = true }
