@@ -59,3 +59,28 @@ sudo usermod -aG input "$USER"
 ```
 
 O Daemon verifica o acesso a `/dev/uinput` na inicialização e notifica claramente se as permissões estiverem ausentes.
+
+## Extensão GNOME (app focado)
+
+A Entrega decide entre `Ctrl+V` e `Ctrl+Shift+V` (terminais) consultando o app
+focado via D-Bus, exposto pela extensão mínima em `gnome-extension/` (ver ADR
+0001). Sem a extensão instalada e habilitada, o Daemon degrada para `Ctrl+V`
+sem erro fatal. O instalador automático fica para outro ticket; para
+desenvolver/testar manualmente:
+
+```bash
+ln -s "$(pwd)/gnome-extension" ~/.local/share/gnome-shell/extensions/evervox@evervox.local
+# Wayland: relogar a sessão. X11: Alt+F2, r, Enter.
+gnome-extensions enable evervox@evervox.local
+```
+
+Contrato D-Bus (mantenha `gnome-extension/extension.js` e
+`crates/daemon/src/foco.rs` em sincronia se mudar):
+
+- destino: `org.gnome.Shell` (a extensão não tem nome de barramento próprio)
+- objeto: `/com/evervox/Extensao`
+- interface: `com.evervox.Extensao1`
+- método: `AppFocado() -> s` (WM_CLASS da janela focada, ou vazio)
+
+A lista de identificadores tratados como terminal é configurável em
+`terminais_conhecidos` no `config.toml` do Daemon.

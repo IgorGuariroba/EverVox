@@ -1,6 +1,8 @@
-//! Config TOML do Daemon: modelo local e idioma do Engine. Criada com
-//! defaults na primeira execução, em `$XDG_CONFIG_HOME/evervox/config.toml`
-//! (ou `~/.config/evervox/config.toml`).
+//! Config TOML do Daemon: modelo local, idioma do Engine e lista de
+//! terminais conhecidos (usada pela Entrega para decidir entre `Ctrl+V` e
+//! `Ctrl+Shift+V`, ver [`crate::foco`]). Criada com defaults na primeira
+//! execução, em `$XDG_CONFIG_HOME/evervox/config.toml` (ou
+//! `~/.config/evervox/config.toml`).
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -10,6 +12,10 @@ use std::path::Path;
 pub struct Config {
     pub idioma: String,
     pub modelo_local: String,
+    /// Identificadores de app (WM_CLASS, como devolvido pela extensão GNOME)
+    /// tratados como terminal na Entrega. Comparação sem diferenciar
+    /// maiúsculas/minúsculas (ver [`crate::foco::decidir_atalho`]).
+    pub terminais_conhecidos: Vec<String>,
 }
 
 impl Default for Config {
@@ -17,6 +23,21 @@ impl Default for Config {
         Self {
             idioma: "pt".to_string(),
             modelo_local: "base".to_string(),
+            terminais_conhecidos: [
+                "gnome-terminal-server",
+                "org.gnome.terminal",
+                "org.gnome.console",
+                "kgx",
+                "alacritty",
+                "kitty",
+                "konsole",
+                "xterm",
+                "tilix",
+                "wezterm",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
         }
     }
 }
@@ -54,6 +75,9 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.idioma, "pt");
         assert_eq!(config.modelo_local, "base");
+        assert!(config
+            .terminais_conhecidos
+            .contains(&"gnome-terminal-server".to_string()));
     }
 
     #[test]

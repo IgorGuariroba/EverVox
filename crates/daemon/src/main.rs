@@ -2,6 +2,7 @@ mod audio;
 mod config;
 mod engine_whisper;
 mod entrega;
+mod foco;
 mod microfone;
 mod modelo;
 mod wav;
@@ -10,6 +11,7 @@ mod xdg;
 use engine_whisper::EngineWhisper;
 use entrega::EntregaClipboard;
 use evervox_core::{dbus, ErroMicrofone, Feedback, Machine, ResultadoToggle};
+use foco::FocoGnome;
 use microfone::MicrofoneCpal;
 use notify_rust::Notification;
 use std::process::Command;
@@ -104,7 +106,8 @@ impl Feedback for DaemonFeedback {
 }
 
 struct DaemonService {
-    machine: Mutex<Machine<DaemonFeedback, MicrofoneCpal, EngineWhisper, EntregaClipboard>>,
+    machine:
+        Mutex<Machine<DaemonFeedback, MicrofoneCpal, EngineWhisper, EntregaClipboard, FocoGnome>>,
 }
 
 #[interface(name = "com.evervox.Daemon1")]
@@ -172,15 +175,10 @@ async fn avisar_beep_indisponivel() {
     .await;
 }
 
-/// Carrega a config, garante o modelo local em disco e carrega o Engine
-/// whisper.cpp na memória — tudo bloqueante, feito uma única vez na
-/// inicialização do Daemon.
-fn preparar_engine() -> anyhow::Result<EngineWhisper> {
-    let config = config::carregar_ou_criar()?;
-    eprintln!(
-        "evervox-daemon: config carregada (idioma={}, modelo={})",
-        config.idioma, config.modelo_local
-    );
+/// Garante o modelo local em disco e carrega o Engine whisper.cpp na
+/// memória — tudo bloqueante, feito uma única vez na inicialização do
+/// Daemon.
+fn preparar_engine(config: &config::Config) -> anyhow::Result<EngineWhisper> {
     let caminho_modelo = modelo::garantir(&config.modelo_local)?;
     eprintln!("evervox-daemon: carregando modelo whisper.cpp na memória...");
     let engine = EngineWhisper::carregar(&caminho_modelo, &config.idioma)?;
@@ -194,7 +192,16 @@ async fn main() -> zbus::Result<()> {
         avisar_beep_indisponivel().await;
     }
 
-    let engine = preparar_engine().unwrap_or_else(|erro| {
+    let config = config::carregar_ou_criar().unwrap_or_else(|erro| {
+        eprintln!("evervox-daemon: falha fatal ao carregar a config: {erro}");
+        std::process::exit(1);
+    });
+    eprintln!(
+        "evervox-daemon: config carregada (idioma={}, modelo={})",
+        config.idioma, config.modelo_local
+    );
+
+    let engine = preparar_engine(&config).unwrap_or_else(|erro| {
         eprintln!("evervox-daemon: falha fatal ao preparar o Engine local: {erro}");
         std::process::exit(1);
     });
@@ -204,12 +211,15 @@ async fn main() -> zbus::Result<()> {
         avisar(&mensagem).await;
     }
 
+    let foco = FocoGnome::nova(config.terminais_conhecidos.clone());
+
     let service = DaemonService {
         machine: Mutex::new(Machine::new(
             DaemonFeedback,
             MicrofoneCpal::default(),
             engine,
             entrega,
+            foco,
         )),
     };
 
