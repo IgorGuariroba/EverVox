@@ -1,14 +1,14 @@
 mod audio;
-mod clipboard;
 mod config;
 mod engine_whisper;
+mod entrega;
 mod microfone;
 mod modelo;
 mod wav;
 mod xdg;
 
-use clipboard::ClipboardWlCopy;
 use engine_whisper::EngineWhisper;
+use entrega::EntregaClipboard;
 use evervox_core::{dbus, ErroMicrofone, Feedback, Machine, ResultadoToggle};
 use microfone::MicrofoneCpal;
 use notify_rust::Notification;
@@ -80,6 +80,15 @@ impl Feedback for DaemonFeedback {
         );
     }
 
+    fn ditado_no_clipboard_sem_colar(&mut self, texto: &str) {
+        let resumo = resumir_para_notificacao(texto);
+        eprintln!("evervox-daemon: colar automático falhou, texto ficou no clipboard");
+        self.notificar(
+            &format!("Não foi possível colar automaticamente: \"{resumo}\" está no clipboard, cole com Ctrl+V."),
+            notify_rust::Urgency::Normal,
+        );
+    }
+
     fn falha_ditado(&mut self, mensagem: &str) {
         eprintln!("evervox-daemon: {mensagem}");
         self.notificar(
@@ -87,10 +96,15 @@ impl Feedback for DaemonFeedback {
             notify_rust::Urgency::Normal,
         );
     }
+
+    fn aviso(&mut self, mensagem: &str) {
+        eprintln!("evervox-daemon: {mensagem}");
+        self.notificar(mensagem, notify_rust::Urgency::Low);
+    }
 }
 
 struct DaemonService {
-    machine: Mutex<Machine<DaemonFeedback, MicrofoneCpal, EngineWhisper, ClipboardWlCopy>>,
+    machine: Mutex<Machine<DaemonFeedback, MicrofoneCpal, EngineWhisper, EntregaClipboard>>,
 }
 
 #[interface(name = "com.evervox.Daemon1")]
@@ -116,27 +130,28 @@ impl DaemonService {
     }
 }
 
+/// Notifica algo que precisa da atenção do usuário fora do pipeline do
+/// Ditado (falha ao salvar a Gravação, microfone indisponível, som/colar
+/// indisponíveis na inicialização): loga no stderr e mostra uma notificação
+/// com a mesma mensagem.
+async fn avisar(mensagem: &str) {
+    eprintln!("evervox-daemon: {mensagem}");
+    let _ = Notification::new()
+        .summary("EverVox")
+        .body(mensagem)
+        .show_async()
+        .await;
+}
+
 async fn salvar_gravacao(audio: evervox_core::AudioGravado) {
     match wav::salvar(&audio) {
         Ok(caminho) => eprintln!("evervox-daemon: Gravação salva em {}", caminho.display()),
-        Err(erro) => {
-            eprintln!("evervox-daemon: falha ao salvar a Gravação como WAV: {erro}");
-            let _ = Notification::new()
-                .summary("EverVox")
-                .body(&format!("Falha ao salvar o áudio da Gravação: {erro}"))
-                .show_async()
-                .await;
-        }
+        Err(erro) => avisar(&format!("Falha ao salvar o áudio da Gravação: {erro}")).await,
     }
 }
 
 async fn avisar_microfone_indisponivel(erro: &ErroMicrofone) {
-    eprintln!("evervox-daemon: {erro}");
-    let _ = Notification::new()
-        .summary("EverVox")
-        .body(&format!("Não foi possível iniciar a gravação: {erro}"))
-        .show_async()
-        .await;
+    avisar(&format!("Não foi possível iniciar a gravação: {erro}")).await;
 }
 
 /// Verifica se o tocador de som do freedesktop sound theme está no PATH.
@@ -150,18 +165,11 @@ fn canberra_disponivel() -> bool {
 }
 
 async fn avisar_beep_indisponivel() {
-    eprintln!(
-        "evervox-daemon: 'canberra-gtk-play' não encontrado no PATH — \
-         o Ditado seguirá sem beep sonoro."
-    );
-    let _ = Notification::new()
-        .summary("EverVox")
-        .body(
-            "Som de feedback indisponível: instale o pacote com 'canberra-gtk-play' \
-             (libcanberra) para ouvir o beep do Toggle.",
-        )
-        .show_async()
-        .await;
+    avisar(
+        "Som de feedback indisponível: instale o pacote com 'canberra-gtk-play' \
+         (libcanberra) para ouvir o beep do Toggle.",
+    )
+    .await;
 }
 
 /// Carrega a config, garante o modelo local em disco e carrega o Engine
@@ -191,12 +199,17 @@ async fn main() -> zbus::Result<()> {
         std::process::exit(1);
     });
 
+    let (entrega, aviso_colar_indisponivel) = EntregaClipboard::nova();
+    if let Some(mensagem) = aviso_colar_indisponivel {
+        avisar(&mensagem).await;
+    }
+
     let service = DaemonService {
         machine: Mutex::new(Machine::new(
             DaemonFeedback,
             MicrofoneCpal::default(),
             engine,
-            ClipboardWlCopy,
+            entrega,
         )),
     };
 

@@ -13,3 +13,4 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 whisper-rs = "0.16"
+uinput = { version = "0.1", default-features = false }
