@@ -34,3 +34,13 @@ O processo residente do EverVox que mantém o modelo carregado e executa o pipel
 **Overlay**:
 O indicador visual flutuante (na extensão GNOME) que mostra o estado do Ditado: gravando ou processando.
 _Avoid_: tray, ícone de status
+
+## Dev setup
+
+Após clonar, ative os git hooks versionados (fmt/clippy no commit, testes no push):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Push direto para `main` é bloqueado (hook local + ruleset no GitHub); todo merge entra por PR com o check `ci` verde.

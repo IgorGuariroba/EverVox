@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Verificações rápidas antes do commit: formatação e lints.
+set -euo pipefail
+
+# Garante que o cargo esteja no PATH mesmo em ambientes não interativos (GUIs, IDEs).
+command -v cargo >/dev/null 2>&1 || export PATH="$HOME/.cargo/bin:$PATH"
+
+echo "[pre-commit] cargo fmt --check"
+cargo fmt --all -- --check || {
+    echo "[pre-commit] Formatação incorreta. Rode: cargo fmt --all" >&2
+    exit 1
+}
+
+echo "[pre-commit] cargo clippy"
+cargo clippy --workspace --all-targets -- -D warnings || {
+    echo "[pre-commit] Clippy encontrou problemas. Corrija antes de commitar." >&2
+    exit 1
+}
+
+echo "[pre-commit] OK"
