@@ -126,14 +126,47 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
-                let mut buffer = [0u8; 65536];
-                let lidos = stream.read(&mut buffer).unwrap_or(0);
-                let _ = tx.send(String::from_utf8_lossy(&buffer[..lidos]).to_string());
+                let requisicao = ler_requisicao_completa(&mut stream);
+                let _ = tx.send(requisicao);
                 let _ = stream.write_all(resposta_http.as_bytes());
                 let _ = stream.flush();
             }
         });
         (format!("http://{endereco}"), rx)
+    }
+
+    /// Lê a requisição HTTP inteira do stream: acumula leituras até ter os
+    /// headers completos e, a partir do `Content-Length`, o corpo inteiro.
+    /// Uma única leitura não basta — o corpo multipart pode chegar em vários
+    /// segmentos TCP, e parar cedo é exatamente a corrida que deixava os
+    /// testes de inspeção da requisição intermitentes.
+    fn ler_requisicao_completa(stream: &mut std::net::TcpStream) -> String {
+        let mut dados = Vec::new();
+        let mut buffer = [0u8; 65536];
+        loop {
+            let lidos = match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(lidos) => lidos,
+            };
+            dados.extend_from_slice(&buffer[..lidos]);
+
+            let texto = String::from_utf8_lossy(&dados);
+            let Some(fim_headers) = texto.find("\r\n\r\n") else {
+                continue;
+            };
+            let content_length: usize = texto[..fim_headers]
+                .lines()
+                .find_map(|linha| {
+                    let (nome, valor) = linha.split_once(':')?;
+                    nome.eq_ignore_ascii_case("content-length")
+                        .then(|| valor.trim().parse().ok())?
+                })
+                .unwrap_or(0);
+            if dados.len() >= fim_headers + 4 + content_length {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&dados).to_string()
     }
 
     fn resposta_http(status: &str, corpo: &str) -> String {
