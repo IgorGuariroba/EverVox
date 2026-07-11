@@ -38,4 +38,25 @@ if [[ -d gnome-extension ]]; then
     }
 fi
 
+# Scripts shell: sintaxe sempre; shellcheck quando disponível (o CI o roda
+# sempre — sem ele local, o hook avisa em vez de dar falsa segurança).
+if compgen -G "scripts/*.sh" >/dev/null; then
+    echo "[pre-commit] scripts: sintaxe bash"
+    for arquivo in scripts/*.sh; do
+        bash -n "$arquivo" || {
+            echo "[pre-commit] Erro de sintaxe em $arquivo." >&2
+            exit 1
+        }
+    done
+    if command -v shellcheck >/dev/null 2>&1; then
+        echo "[pre-commit] scripts: shellcheck"
+        shellcheck scripts/*.sh || {
+            echo "[pre-commit] shellcheck encontrou problemas. Corrija antes de commitar." >&2
+            exit 1
+        }
+    else
+        echo "[pre-commit] aviso: 'shellcheck' ausente, pulando lint dos scripts (o CI vai rodá-lo)." >&2
+    fi
+fi
+
 echo "[pre-commit] OK"

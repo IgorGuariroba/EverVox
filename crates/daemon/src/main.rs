@@ -167,6 +167,10 @@ type MachineDoDaemon = Machine<
 
 struct DaemonService {
     machine: Mutex<MachineDoDaemon>,
+    /// Resumo do Engine e da Limpeza resolvidos na inicialização (ver
+    /// `resumir_engine`/`resumir_limpeza`), devolvido por [`DaemonService::status`].
+    resumo_engine: String,
+    resumo_limpeza: String,
 }
 
 #[interface(name = "com.evervox.Daemon1")]
@@ -190,6 +194,43 @@ impl DaemonService {
             }
         }
     }
+
+    /// Resumo de saúde do Daemon para `evervox status`: o Engine e a
+    /// Limpeza resolvidos na inicialização. Responder já implica que o
+    /// modelo/Engine terminou de carregar — o Daemon falha na inicialização
+    /// e nunca chega a servir D-Bus se isso não acontecer (ver
+    /// `preparar_engine`/`preparar_limpeza`).
+    async fn status(&self) -> String {
+        format!("{}\n{}", self.resumo_engine, self.resumo_limpeza)
+    }
+}
+
+/// Descreve o Engine resolvido pela config para `evervox status` (ver
+/// [`DaemonService::status`]).
+fn resumir_engine(config: &config::Config) -> String {
+    match config.engine {
+        EngineEscolhido::Local => format!(
+            "engine: local (modelo '{}', carregado)",
+            config.modelo_local
+        ),
+        EngineEscolhido::Cloud => "engine: cloud (OpenAI)".to_string(),
+    }
+}
+
+/// Descreve a Limpeza resolvida pela config para `evervox status` (ver
+/// [`DaemonService::status`]).
+fn resumir_limpeza(config: &config::Config) -> String {
+    if !config.limpeza.habilitada {
+        return "limpeza: desligada".to_string();
+    }
+    let provedor = match config.limpeza.provedor {
+        ProvedorLimpezaEscolhido::Openai => "openai",
+        ProvedorLimpezaEscolhido::Anthropic => "anthropic",
+    };
+    format!(
+        "limpeza: ligada (provedor '{provedor}', modelo '{}')",
+        config.limpeza.modelo
+    )
 }
 
 /// Notifica algo que precisa da atenção do usuário fora do pipeline do
@@ -362,6 +403,8 @@ async fn main() -> zbus::Result<()> {
     }
 
     let foco = FocoGnome::nova(config.terminais_conhecidos.clone());
+    let resumo_engine = resumir_engine(&config);
+    let resumo_limpeza = resumir_limpeza(&config);
 
     let service = DaemonService {
         machine: Mutex::new(Machine::new(
@@ -373,6 +416,8 @@ async fn main() -> zbus::Result<()> {
             entrega,
             foco,
         )),
+        resumo_engine,
+        resumo_limpeza,
     };
 
     let connection = connection::Builder::session()?

@@ -1,6 +1,10 @@
-use evervox_core::dbus;
+use evervox_core::{dbus, dbus_extensao};
 use notify_rust::Notification;
 use zbus::Connection;
+
+/// Provedores de API cujas chaves `evervox status` confere no GNOME
+/// Keyring, independente de qual a config do Daemon exige no momento.
+const PROVEDORES_DE_CHAVE: &[&str] = &["openai", "anthropic"];
 
 #[tokio::main]
 async fn main() {
@@ -8,8 +12,9 @@ async fn main() {
     match comando.as_deref() {
         Some("toggle") => toggle().await,
         Some("set-key") => set_key(std::env::args().nth(2)).await,
+        Some("status") => status().await,
         _ => {
-            eprintln!("uso: evervox toggle | evervox set-key <provedor>");
+            eprintln!("uso: evervox toggle | evervox set-key <provedor> | evervox status");
             std::process::exit(1);
         }
     }
@@ -77,4 +82,78 @@ async fn notificar_daemon_indisponivel(detalhe: &str) {
         .body(&format!("Daemon não está rodando: {detalhe}"))
         .show_async()
         .await;
+}
+
+/// Reporta a saúde do EverVox (ver issue #10): Daemon ativo, extensão GNOME
+/// respondendo e chaves de API salvas no Keyring. Cada checagem roda de
+/// forma independente das outras, para o diagnóstico continuar útil mesmo
+/// com parte do sistema fora do ar.
+async fn status() {
+    println!("EverVox — status\n");
+
+    match consultar_status_daemon().await {
+        Ok(resumo) => {
+            println!("Daemon: ativo");
+            for linha in resumo.lines() {
+                println!("  {linha}");
+            }
+        }
+        Err(erro) => {
+            println!("Daemon: não está rodando ({erro})");
+            println!("  dica: systemctl --user status evervox");
+        }
+    }
+
+    match consultar_extensao().await {
+        Ok(()) => println!("Extensão GNOME: respondendo"),
+        Err(_) => {
+            println!("Extensão GNOME: não detectada (Entrega usa Ctrl+V como fallback)")
+        }
+    }
+
+    println!("Chaves de API:");
+    for provedor in PROVEDORES_DE_CHAVE {
+        let situacao = match evervox_segredo::carregar(provedor) {
+            Ok(Some(_)) => "salva",
+            Ok(None) => "não configurada",
+            Err(erro) => {
+                eprintln!("evervox: falha ao consultar a chave de '{provedor}' no Keyring: {erro}");
+                "erro ao consultar o Keyring"
+            }
+        };
+        println!("  {provedor}: {situacao}");
+    }
+}
+
+/// Chama `Status()` no Daemon via D-Bus. Erro aqui cobre tanto "Daemon não
+/// está rodando" quanto qualquer falha de D-Bus na consulta.
+async fn consultar_status_daemon() -> anyhow::Result<String> {
+    let connection = Connection::session().await?;
+    let reply = connection
+        .call_method(
+            Some(dbus::SERVICE_NAME),
+            dbus::OBJECT_PATH,
+            Some(dbus::INTERFACE_NAME),
+            "Status",
+            &(),
+        )
+        .await?;
+    Ok(reply.body().deserialize()?)
+}
+
+/// Chama `AppFocado()` na extensão GNOME via D-Bus, só para confirmar que
+/// ela está instalada, habilitada e respondendo — o valor devolvido não
+/// importa para `evervox status`.
+async fn consultar_extensao() -> anyhow::Result<()> {
+    let connection = Connection::session().await?;
+    connection
+        .call_method(
+            Some(dbus_extensao::SERVICE_NAME),
+            dbus_extensao::OBJECT_PATH,
+            Some(dbus_extensao::INTERFACE_NAME),
+            dbus_extensao::METODO_APP_FOCADO,
+            &(),
+        )
+        .await?;
+    Ok(())
 }

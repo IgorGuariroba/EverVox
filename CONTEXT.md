@@ -101,8 +101,9 @@ ln -s "$(pwd)/gnome-extension" ~/.local/share/gnome-shell/extensions/evervox@eve
 gnome-extensions enable evervox@evervox.local
 ```
 
-Contrato D-Bus (mantenha `gnome-extension/extension.js` e
-`crates/daemon/src/foco.rs` em sincronia se mudar):
+Contrato D-Bus (constantes em `crates/core/src/lib.rs::dbus_extensao`,
+única fonte para o Daemon e a CLI — mantenha `gnome-extension/extension.js`
+em sincronia se mudar):
 
 - destino: `org.gnome.Shell` (a extensão não tem nome de barramento próprio)
 - objeto: `/com/evervox/Extensao`
@@ -187,3 +188,26 @@ mensagem instruindo a rodar `set-key`.
 Nota de design (ADR 0003): a chamada de LLM da Limpeza nasce preparada para
 também fundir a Tradução (ticket futuro) numa única chamada, sem mudar como o
 núcleo a invoca.
+
+## Instalação e `evervox status`
+
+`scripts/instalar.sh` (ver README) builda os binários, registra o Daemon
+como serviço `systemd --user` (restart automático em crash), instala a
+extensão GNOME, configura a regra udev de `/dev/uinput` e registra o atalho
+de teclado do Toggle via `gsettings`. É a única forma de instalação da v1 —
+sem empacotamento deb/flatpak (fora de escopo, ver spec #1).
+
+`evervox status` roda três checagens independentes entre si, para o
+diagnóstico continuar útil mesmo com parte do sistema fora do ar:
+
+- **Daemon**: chama o método D-Bus `Status()` em `com.evervox.Daemon1`
+  (mesma interface do `Toggle`). A resposta é só a descrição do Engine e da
+  Limpeza resolvidos na inicialização (ver `resumir_engine`/`resumir_limpeza`
+  em `crates/daemon/src/main.rs`) — o Daemon nunca chega a servir D-Bus se o
+  Engine ou a Limpeza falharem ao preparar, então responder já garante que o
+  Engine terminou de preparar (para `engine = "local"`, isso inclui o modelo
+  carregado em memória; para `"cloud"` não há modelo local a carregar).
+- **Extensão GNOME**: chama `AppFocado()` (ver seção acima) só para
+  confirmar presença; o valor devolvido não importa aqui.
+- **Chaves de API**: consulta o GNOME Keyring diretamente (`evervox-segredo`)
+  para `openai` e `anthropic`, independente do que a config atual exige.

@@ -4,19 +4,8 @@
 //! ou qualquer falha na consulta degradam para [`Atalho::Padrao`] sem erro —
 //! o pior caso é o mesmo `Ctrl+V` de antes desta extensão existir.
 
-use evervox_core::{Atalho, Foco};
+use evervox_core::{dbus_extensao, Atalho, Foco};
 use zbus::blocking::Connection;
-
-/// Endereço D-Bus exposto pela extensão GNOME Shell do EverVox. A extensão
-/// não possui (nem precisa de) um nome de barramento próprio: ela exporta o
-/// objeto na conexão de sessão que o próprio GNOME Shell já é dono de
-/// `org.gnome.Shell`, então a consulta é dirigida a esse nome.
-mod contrato_extensao {
-    pub const SERVICE_NAME: &str = "org.gnome.Shell";
-    pub const OBJECT_PATH: &str = "/com/evervox/Extensao";
-    pub const INTERFACE_NAME: &str = "com.evervox.Extensao1";
-    pub const METODO_APP_FOCADO: &str = "AppFocado";
-}
 
 pub struct FocoGnome {
     connection: Option<Connection>,
@@ -37,10 +26,10 @@ impl FocoGnome {
         let connection = self.connection.as_ref()?;
         let reply = connection
             .call_method(
-                Some(contrato_extensao::SERVICE_NAME),
-                contrato_extensao::OBJECT_PATH,
-                Some(contrato_extensao::INTERFACE_NAME),
-                contrato_extensao::METODO_APP_FOCADO,
+                Some(dbus_extensao::SERVICE_NAME),
+                dbus_extensao::OBJECT_PATH,
+                Some(dbus_extensao::INTERFACE_NAME),
+                dbus_extensao::METODO_APP_FOCADO,
                 &(),
             )
             .ok()?;
