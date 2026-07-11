@@ -9,7 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 evervox-core = { path = "../core" }
+evervox-segredo = { path = "../segredo" }
 zbus = { workspace = true }
 tokio = { workspace = true }
 notify-rust = { workspace = true }
 anyhow = { workspace = true }
+rpassword = { workspace = true }

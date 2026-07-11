@@ -1,5 +1,6 @@
 mod audio;
 mod config;
+mod engine_cloud;
 mod engine_whisper;
 mod entrega;
 mod foco;
@@ -8,9 +9,11 @@ mod modelo;
 mod wav;
 mod xdg;
 
+use config::Engine as EngineEscolhido;
+use engine_cloud::EngineCloud;
 use engine_whisper::EngineWhisper;
 use entrega::EntregaClipboard;
-use evervox_core::{dbus, ErroMicrofone, Feedback, Machine, ResultadoToggle};
+use evervox_core::{dbus, EngineSTT, ErroMicrofone, Feedback, Machine, ResultadoToggle};
 use foco::FocoGnome;
 use microfone::MicrofoneCpal;
 use notify_rust::Notification;
@@ -105,9 +108,11 @@ impl Feedback for DaemonFeedback {
     }
 }
 
+type MachineDoDaemon =
+    Machine<DaemonFeedback, MicrofoneCpal, Box<dyn EngineSTT>, EntregaClipboard, FocoGnome>;
+
 struct DaemonService {
-    machine:
-        Mutex<Machine<DaemonFeedback, MicrofoneCpal, EngineWhisper, EntregaClipboard, FocoGnome>>,
+    machine: Mutex<MachineDoDaemon>,
 }
 
 #[interface(name = "com.evervox.Daemon1")]
@@ -175,15 +180,31 @@ async fn avisar_beep_indisponivel() {
     .await;
 }
 
-/// Garante o modelo local em disco e carrega o Engine whisper.cpp na
-/// memória — tudo bloqueante, feito uma única vez na inicialização do
-/// Daemon.
-fn preparar_engine(config: &config::Config) -> anyhow::Result<EngineWhisper> {
-    let caminho_modelo = modelo::garantir(&config.modelo_local)?;
-    eprintln!("evervox-daemon: carregando modelo whisper.cpp na memória...");
-    let engine = EngineWhisper::carregar(&caminho_modelo, &config.idioma)?;
-    eprintln!("evervox-daemon: modelo carregado, Engine local pronto.");
-    Ok(engine)
+/// Prepara o Engine STT escolhido pela config — local (whisper.cpp) ou cloud
+/// (API da OpenAI) — tudo bloqueante, feito uma única vez na inicialização
+/// do Daemon. A escolha é estática: trocar de Engine exige reiniciar o
+/// Daemon com a config atualizada (ver `CONTEXT.md`).
+fn preparar_engine(config: &config::Config) -> anyhow::Result<Box<dyn EngineSTT>> {
+    match config.engine {
+        EngineEscolhido::Local => {
+            let caminho_modelo = modelo::garantir(&config.modelo_local)?;
+            eprintln!("evervox-daemon: carregando modelo whisper.cpp na memória...");
+            let engine = EngineWhisper::carregar(&caminho_modelo, &config.idioma)?;
+            eprintln!("evervox-daemon: modelo carregado, Engine local pronto.");
+            Ok(Box::new(engine))
+        }
+        EngineEscolhido::Cloud => {
+            let chave =
+                evervox_segredo::carregar(engine_cloud::PROVEDOR_OPENAI)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "chave da OpenAI ausente: rode `evervox set-key {}`",
+                        engine_cloud::PROVEDOR_OPENAI
+                    )
+                })?;
+            eprintln!("evervox-daemon: Engine cloud (OpenAI) pronto.");
+            Ok(Box::new(EngineCloud::nova(chave, &config.idioma)))
+        }
+    }
 }
 
 #[tokio::main]
@@ -197,12 +218,12 @@ async fn main() -> zbus::Result<()> {
         std::process::exit(1);
     });
     eprintln!(
-        "evervox-daemon: config carregada (idioma={}, modelo={})",
-        config.idioma, config.modelo_local
+        "evervox-daemon: config carregada (idioma={}, modelo={}, engine={:?})",
+        config.idioma, config.modelo_local, config.engine
     );
 
     let engine = preparar_engine(&config).unwrap_or_else(|erro| {
-        eprintln!("evervox-daemon: falha fatal ao preparar o Engine local: {erro}");
+        eprintln!("evervox-daemon: falha fatal ao preparar o Engine: {erro}");
         std::process::exit(1);
     });
 
