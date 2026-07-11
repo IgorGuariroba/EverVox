@@ -4,16 +4,20 @@ mod engine_cloud;
 mod engine_whisper;
 mod entrega;
 mod foco;
+mod limpeza;
 mod microfone;
 mod modelo;
 mod wav;
 mod xdg;
 
 use config::Engine as EngineEscolhido;
+use config::ProvedorLimpeza as ProvedorLimpezaEscolhido;
 use engine_cloud::EngineCloud;
 use engine_whisper::EngineWhisper;
 use entrega::EntregaClipboard;
-use evervox_core::{dbus, EngineSTT, ErroMicrofone, Feedback, Machine, ResultadoToggle};
+use evervox_core::{
+    dbus, EngineSTT, ErroMicrofone, Feedback, Limpeza, LimpezaConfig, Machine, ResultadoToggle,
+};
 use foco::FocoGnome;
 use microfone::MicrofoneCpal;
 use notify_rust::Notification;
@@ -108,8 +112,14 @@ impl Feedback for DaemonFeedback {
     }
 }
 
-type MachineDoDaemon =
-    Machine<DaemonFeedback, MicrofoneCpal, Box<dyn EngineSTT>, EntregaClipboard, FocoGnome>;
+type MachineDoDaemon = Machine<
+    DaemonFeedback,
+    MicrofoneCpal,
+    Box<dyn EngineSTT>,
+    Box<dyn Limpeza>,
+    EntregaClipboard,
+    FocoGnome,
+>;
 
 struct DaemonService {
     machine: Mutex<MachineDoDaemon>,
@@ -189,7 +199,8 @@ fn preparar_engine(config: &config::Config) -> anyhow::Result<Box<dyn EngineSTT>
         EngineEscolhido::Local => {
             let caminho_modelo = modelo::garantir(&config.modelo_local)?;
             eprintln!("evervox-daemon: carregando modelo whisper.cpp na memória...");
-            let engine = EngineWhisper::carregar(&caminho_modelo, &config.idioma)?;
+            let engine =
+                EngineWhisper::carregar(&caminho_modelo, &config.idioma, &config.vocabulario)?;
             eprintln!("evervox-daemon: modelo carregado, Engine local pronto.");
             Ok(Box::new(engine))
         }
@@ -202,7 +213,69 @@ fn preparar_engine(config: &config::Config) -> anyhow::Result<Box<dyn EngineSTT>
                     )
                 })?;
             eprintln!("evervox-daemon: Engine cloud (OpenAI) pronto.");
-            Ok(Box::new(EngineCloud::nova(chave, &config.idioma)))
+            Ok(Box::new(EngineCloud::nova(
+                chave,
+                &config.idioma,
+                &config.vocabulario,
+            )))
+        }
+    }
+}
+
+/// Prepara a Limpeza escolhida pela config — desligada, OpenAI ou Anthropic
+/// — tudo bloqueante, feito uma única vez na inicialização do Daemon, como o
+/// Engine (ver [`preparar_engine`]). Com a Limpeza desligada, nenhuma chave
+/// de API é exigida: o núcleo nem chega a chamá-la (ver
+/// [`evervox_core::LimpezaConfig`]).
+fn preparar_limpeza(config: &config::Config) -> anyhow::Result<Box<dyn Limpeza>> {
+    if !config.limpeza.habilitada {
+        return Ok(Box::new(limpeza::LimpezaDesativada));
+    }
+
+    let contexto = limpeza::ContextoLimpeza {
+        instrucoes: config.limpeza.instrucoes.clone(),
+        vocabulario: config.vocabulario.clone(),
+        pontuacao_falada: config.limpeza.pontuacao_falada,
+    };
+    let timeout = std::time::Duration::from_millis(config.limpeza.timeout_ms);
+
+    match config.limpeza.provedor {
+        ProvedorLimpezaEscolhido::Openai => {
+            let chave = evervox_segredo::carregar(limpeza::PROVEDOR_OPENAI)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "chave da OpenAI ausente: rode `evervox set-key {}`",
+                    limpeza::PROVEDOR_OPENAI
+                )
+            })?;
+            eprintln!(
+                "evervox-daemon: Limpeza via OpenAI ({}) pronta.",
+                config.limpeza.modelo
+            );
+            Ok(Box::new(limpeza::LimpezaOpenAI::nova(
+                chave,
+                &config.limpeza.modelo,
+                &contexto,
+                timeout,
+            )))
+        }
+        ProvedorLimpezaEscolhido::Anthropic => {
+            let chave =
+                evervox_segredo::carregar(limpeza::PROVEDOR_ANTHROPIC)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "chave da Anthropic ausente: rode `evervox set-key {}`",
+                        limpeza::PROVEDOR_ANTHROPIC
+                    )
+                })?;
+            eprintln!(
+                "evervox-daemon: Limpeza via Anthropic ({}) pronta.",
+                config.limpeza.modelo
+            );
+            Ok(Box::new(limpeza::LimpezaAnthropic::nova(
+                chave,
+                &config.limpeza.modelo,
+                &contexto,
+                timeout,
+            )))
         }
     }
 }
@@ -227,6 +300,15 @@ async fn main() -> zbus::Result<()> {
         std::process::exit(1);
     });
 
+    let limpeza = preparar_limpeza(&config).unwrap_or_else(|erro| {
+        eprintln!("evervox-daemon: falha fatal ao preparar a Limpeza: {erro}");
+        std::process::exit(1);
+    });
+    let limpeza_config = LimpezaConfig {
+        habilitada: config.limpeza.habilitada,
+        timeout: std::time::Duration::from_millis(config.limpeza.timeout_ms),
+    };
+
     let (entrega, aviso_colar_indisponivel) = EntregaClipboard::nova();
     if let Some(mensagem) = aviso_colar_indisponivel {
         avisar(&mensagem).await;
@@ -239,6 +321,8 @@ async fn main() -> zbus::Result<()> {
             DaemonFeedback,
             MicrofoneCpal::default(),
             engine,
+            limpeza,
+            limpeza_config,
             entrega,
             foco,
         )),

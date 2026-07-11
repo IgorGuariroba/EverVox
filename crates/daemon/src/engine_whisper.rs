@@ -14,17 +14,28 @@ const AMOSTRAS_MINIMAS: usize = TAXA_AMOSTRAGEM_HZ as usize / 10;
 pub struct EngineWhisper {
     contexto: WhisperContext,
     idioma: String,
+    /// Hint de transcrição montado a partir do Vocabulário do usuário (ver
+    /// `CONTEXT.md`): nomes próprios e jargão que orientam o whisper.cpp a
+    /// acertar a grafia, via `initial_prompt`. Vazio quando não há
+    /// Vocabulário configurado.
+    prompt_vocabulario: String,
 }
 
 impl EngineWhisper {
     /// Carrega o modelo do arquivo em `caminho_modelo`. Bloqueante: só deve
-    /// ser chamado uma vez, na inicialização do Daemon.
-    pub fn carregar(caminho_modelo: &std::path::Path, idioma: &str) -> anyhow::Result<Self> {
+    /// ser chamado uma vez, na inicialização do Daemon. `vocabulario` vira o
+    /// hint de transcrição passado ao whisper.cpp (ver `CONTEXT.md`).
+    pub fn carregar(
+        caminho_modelo: &std::path::Path,
+        idioma: &str,
+        vocabulario: &[String],
+    ) -> anyhow::Result<Self> {
         let contexto =
             WhisperContext::new_with_params(caminho_modelo, WhisperContextParameters::default())?;
         Ok(Self {
             contexto,
             idioma: idioma.to_string(),
+            prompt_vocabulario: vocabulario.join(", "),
         })
     }
 }
@@ -44,6 +55,9 @@ impl EngineSTT for EngineWhisper {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(&self.idioma));
         params.set_translate(false);
+        if !self.prompt_vocabulario.is_empty() {
+            params.set_initial_prompt(&self.prompt_vocabulario);
+        }
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);

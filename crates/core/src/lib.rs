@@ -6,6 +6,7 @@
 //! Toggle pode iniciar outra Gravação sem esperar o Ditado anterior terminar
 //! seu curso. A Limpeza (próximo ticket) entra nesse mesmo pipeline.
 
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -92,6 +93,19 @@ impl std::fmt::Display for ErroEngine {
 
 impl std::error::Error for ErroEngine {}
 
+/// Falha da Limpeza (rede, API ou tempo limite excedido) ao processar a
+/// Transcrição crua.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErroLimpeza(pub String);
+
+impl std::fmt::Display for ErroLimpeza {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ErroLimpeza {}
+
 /// Falha ao entregar a Transcrição.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErroEntrega(pub String);
@@ -132,6 +146,51 @@ pub trait EngineSTT: Send {
 impl EngineSTT for Box<dyn EngineSTT> {
     fn transcrever(&mut self, audio: &AudioGravado) -> Result<String, ErroEngine> {
         (**self).transcrever(audio)
+    }
+}
+
+/// Porta da Limpeza (pós-processamento por LLM da Transcrição crua, ver
+/// `CONTEXT.md`): remove hesitações, corrige gramática e pontuação, orientada
+/// por parâmetros do usuário (Instruções da Limpeza, Vocabulário, Pontuação
+/// falada) que cada implementação recebe na construção — como o Engine cloud
+/// recebe o Idioma de entrada (ver `EngineSTT`). A chamada é bloqueante; o
+/// núcleo (ver [`Machine`]) é quem impõe o timeout do caminho crítico e
+/// decide o que fazer se ela falhar ou estourar.
+///
+/// Nota de design (ADR 0003): esta porta nasce pensada para também acomodar a
+/// Tradução — quando ambas estiverem ligadas, a implementação concreta pode
+/// fundir Limpeza + Tradução numa única chamada de LLM, sem mudar a forma
+/// como o núcleo a invoca.
+pub trait Limpeza: Send {
+    fn limpar(&mut self, texto: &str) -> Result<String, ErroLimpeza>;
+}
+
+/// Permite ao Daemon escolher o provedor da Limpeza (openai, anthropic, ou
+/// nenhum quando desligada) em tempo de inicialização e guardá-lo como
+/// `Box<dyn Limpeza>`, no mesmo espírito de `impl EngineSTT for Box<dyn EngineSTT>`.
+impl Limpeza for Box<dyn Limpeza> {
+    fn limpar(&mut self, texto: &str) -> Result<String, ErroLimpeza> {
+        (**self).limpar(texto)
+    }
+}
+
+/// Configuração da Limpeza no caminho crítico do Ditado: se está ligada e o
+/// timeout além do qual a Transcrição crua é entregue mesmo assim (ver
+/// `CONTEXT.md` e [`Machine::despachar_processamento`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LimpezaConfig {
+    pub habilitada: bool,
+    pub timeout: std::time::Duration,
+}
+
+impl LimpezaConfig {
+    /// Limpeza desligada: usado pelo Daemon quando `cleanup.enabled = false`
+    /// e pelos testes do núcleo que não exercitam a Limpeza.
+    pub fn desativada() -> Self {
+        Self {
+            habilitada: false,
+            timeout: std::time::Duration::ZERO,
+        }
     }
 }
 
@@ -235,30 +294,43 @@ impl ResultadoToggle {
     }
 }
 
-pub struct Machine<F: Feedback, G: FonteDeAudio, E: EngineSTT, D: Entrega, O: Foco> {
+pub struct Machine<F: Feedback, G: FonteDeAudio, E: EngineSTT, L: Limpeza, D: Entrega, O: Foco> {
     state: DitadoState,
     feedback: Arc<Mutex<F>>,
     gravador: Gravador<G>,
     engine: Arc<Mutex<E>>,
+    limpeza: Arc<Mutex<L>>,
+    limpeza_config: LimpezaConfig,
     entrega: Arc<Mutex<D>>,
     foco: Arc<Mutex<O>>,
     processamentos: Vec<JoinHandle<()>>,
 }
 
-impl<F, G, E, D, O> Machine<F, G, E, D, O>
+impl<F, G, E, L, D, O> Machine<F, G, E, L, D, O>
 where
     F: Feedback + 'static,
     G: FonteDeAudio,
     E: EngineSTT + 'static,
+    L: Limpeza + 'static,
     D: Entrega + 'static,
     O: Foco + 'static,
 {
-    pub fn new(feedback: F, fonte_de_audio: G, engine: E, entrega: D, foco: O) -> Self {
+    pub fn new(
+        feedback: F,
+        fonte_de_audio: G,
+        engine: E,
+        limpeza: L,
+        limpeza_config: LimpezaConfig,
+        entrega: D,
+        foco: O,
+    ) -> Self {
         Self {
             state: DitadoState::Ocioso,
             feedback: Arc::new(Mutex::new(feedback)),
             gravador: Gravador::new(fonte_de_audio),
             engine: Arc::new(Mutex::new(engine)),
+            limpeza: Arc::new(Mutex::new(limpeza)),
+            limpeza_config,
             entrega: Arc::new(Mutex::new(entrega)),
             foco: Arc::new(Mutex::new(foco)),
             processamentos: Vec::new(),
@@ -304,6 +376,8 @@ where
 
     fn despachar_processamento(&mut self, audio: AudioGravado) {
         let engine = Arc::clone(&self.engine);
+        let limpeza = Arc::clone(&self.limpeza);
+        let limpeza_config = self.limpeza_config;
         let entrega = Arc::clone(&self.entrega);
         let foco = Arc::clone(&self.foco);
         let feedback = Arc::clone(&self.feedback);
@@ -315,20 +389,30 @@ where
                     feedback.lock().unwrap().ditado_silencioso();
                 }
                 Ok(texto) => {
-                    let texto = texto.trim();
+                    let texto_cru = texto.trim().to_string();
+                    let texto_final = if limpeza_config.habilitada {
+                        aplicar_limpeza(&feedback, limpeza, &texto_cru, limpeza_config.timeout)
+                    } else {
+                        texto_cru
+                    };
                     let atalho = foco.lock().unwrap().atalho_de_colar();
-                    let resultado =
-                        entregar_com_colar_simulado(&mut *entrega.lock().unwrap(), texto, atalho);
+                    let resultado = entregar_com_colar_simulado(
+                        &mut *entrega.lock().unwrap(),
+                        &texto_final,
+                        atalho,
+                    );
                     let mut feedback = feedback.lock().unwrap();
                     match resultado {
-                        Ok(None) => feedback.concluiu_ditado(texto),
+                        Ok(None) => feedback.concluiu_ditado(&texto_final),
                         Ok(Some(erro_ao_restaurar)) => {
-                            feedback.concluiu_ditado(texto);
+                            feedback.concluiu_ditado(&texto_final);
                             feedback.aviso(&format!(
                                 "não foi possível restaurar o clipboard anterior: {erro_ao_restaurar}"
                             ));
                         }
-                        Err(FalhaEntrega::AoColar) => feedback.ditado_no_clipboard_sem_colar(texto),
+                        Err(FalhaEntrega::AoColar) => {
+                            feedback.ditado_no_clipboard_sem_colar(&texto_final)
+                        }
                         Err(FalhaEntrega::Outra(erro)) => feedback.falha_ditado(&erro.to_string()),
                     }
                 }
@@ -336,6 +420,41 @@ where
             }
         });
         self.processamentos.push(handle);
+    }
+}
+
+/// Roda a Limpeza sobre `texto_cru` respeitando `timeout`: estourou ou
+/// falhou, um aviso discreto é emitido e a Transcrição crua é devolvida sem
+/// mais tentativas — o Ditado nunca fica refém da rede (ver `CONTEXT.md`).
+///
+/// A chamada bloqueante à Limpeza roda numa thread própria; se o timeout
+/// vencer primeiro, essa thread é abandonada (ela ainda pode terminar mais
+/// tarde, mas ninguém mais está ouvindo o resultado).
+fn aplicar_limpeza<L: Limpeza + 'static, F: Feedback + 'static>(
+    feedback: &Arc<Mutex<F>>,
+    limpeza: Arc<Mutex<L>>,
+    texto_cru: &str,
+    timeout: std::time::Duration,
+) -> String {
+    let (tx, rx) = mpsc::channel();
+    let texto_para_limpeza = texto_cru.to_string();
+    thread::spawn(move || {
+        let resultado = limpeza.lock().unwrap().limpar(&texto_para_limpeza);
+        let _ = tx.send(resultado);
+    });
+
+    let resultado = rx
+        .recv_timeout(timeout)
+        .unwrap_or_else(|_| Err(ErroLimpeza("tempo limite da Limpeza excedido".to_string())));
+
+    match resultado {
+        Ok(texto_limpo) => texto_limpo.trim().to_string(),
+        Err(erro) => {
+            feedback.lock().unwrap().aviso(&format!(
+                "Limpeza indisponível, entregando a transcrição crua: {erro}"
+            ));
+            texto_cru.to_string()
+        }
     }
 }
 
@@ -368,7 +487,6 @@ fn entregar_com_colar_simulado<D: Entrega>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
@@ -504,6 +622,62 @@ mod tests {
         }
     }
 
+    /// Limpeza fake que devolve um texto fixo (ou uma falha) de imediato, e
+    /// registra se foi chamada — usado para garantir que a Limpeza
+    /// desabilitada nunca dispara uma chamada de rede.
+    #[derive(Clone)]
+    struct FakeLimpeza {
+        resultado: Result<String, ErroLimpeza>,
+        chamada: Arc<Mutex<bool>>,
+    }
+
+    impl FakeLimpeza {
+        fn sucesso(texto: &str) -> Self {
+            Self {
+                resultado: Ok(texto.to_string()),
+                chamada: Arc::new(Mutex::new(false)),
+            }
+        }
+
+        fn falha(mensagem: &str) -> Self {
+            Self {
+                resultado: Err(ErroLimpeza(mensagem.to_string())),
+                chamada: Arc::new(Mutex::new(false)),
+            }
+        }
+
+        fn foi_chamada(&self) -> bool {
+            *self.chamada.lock().unwrap()
+        }
+    }
+
+    impl Default for FakeLimpeza {
+        fn default() -> Self {
+            Self::sucesso("")
+        }
+    }
+
+    impl Limpeza for FakeLimpeza {
+        fn limpar(&mut self, _texto: &str) -> Result<String, ErroLimpeza> {
+            *self.chamada.lock().unwrap() = true;
+            self.resultado.clone()
+        }
+    }
+
+    /// Limpeza fake que bloqueia indefinidamente — usado para exercitar o
+    /// timeout do núcleo sem depender de uma API real. Combinada com um
+    /// timeout curtíssimo em [`LimpezaConfig`], o teste fica determinístico:
+    /// a thread nunca é liberada, então `recv_timeout` sempre vence.
+    struct LimpezaBloqueante;
+
+    impl Limpeza for LimpezaBloqueante {
+        fn limpar(&mut self, _texto: &str) -> Result<String, ErroLimpeza> {
+            loop {
+                thread::park();
+            }
+        }
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum EtapaEntrega {
         Salvar,
@@ -636,12 +810,15 @@ mod tests {
         }
     }
 
+    type MachineDeTeste<L> =
+        Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, L, FakeEntrega, FakeFoco>;
+
     fn nova_machine(
         fonte: FakeFonteDeAudio,
         engine: FakeEngine,
         entrega: FakeEntrega,
         feedback: FakeFeedback,
-    ) -> Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, FakeEntrega, FakeFoco> {
+    ) -> MachineDeTeste<FakeLimpeza> {
         nova_machine_com_foco(fonte, engine, entrega, feedback, FakeFoco::default())
     }
 
@@ -651,13 +828,19 @@ mod tests {
         entrega: FakeEntrega,
         feedback: FakeFeedback,
         foco: FakeFoco,
-    ) -> Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, FakeEntrega, FakeFoco> {
-        Machine::new(feedback, fonte, engine, entrega, foco)
+    ) -> MachineDeTeste<FakeLimpeza> {
+        Machine::new(
+            feedback,
+            fonte,
+            engine,
+            FakeLimpeza::default(),
+            LimpezaConfig::desativada(),
+            entrega,
+            foco,
+        )
     }
 
-    fn nova_machine_padrao(
-        fonte: FakeFonteDeAudio,
-    ) -> Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, FakeEntrega, FakeFoco> {
+    fn nova_machine_padrao(fonte: FakeFonteDeAudio) -> MachineDeTeste<FakeLimpeza> {
         nova_machine(
             fonte,
             FakeEngine::sucesso(""),
@@ -1048,6 +1231,8 @@ mod tests {
             feedback.clone(),
             FakeFonteDeAudio::default(),
             engine,
+            FakeLimpeza::default(),
+            LimpezaConfig::desativada(),
             entrega.clone(),
             FakeFoco::default(),
         );
@@ -1083,6 +1268,159 @@ mod tests {
                 Event::Encerrou,
                 Event::Iniciou,
                 Event::Concluiu("primeiro ditado".to_string()),
+            ]
+        );
+    }
+
+    fn nova_machine_com_limpeza(
+        engine: FakeEngine,
+        limpeza: FakeLimpeza,
+        limpeza_config: LimpezaConfig,
+        entrega: FakeEntrega,
+        feedback: FakeFeedback,
+    ) -> MachineDeTeste<FakeLimpeza> {
+        Machine::new(
+            feedback,
+            FakeFonteDeAudio::default(),
+            engine,
+            limpeza,
+            limpeza_config,
+            entrega,
+            FakeFoco::default(),
+        )
+    }
+
+    fn config_limpeza_habilitada() -> LimpezaConfig {
+        LimpezaConfig {
+            habilitada: true,
+            timeout: std::time::Duration::from_secs(2),
+        }
+    }
+
+    #[test]
+    fn limpeza_habilitada_entrega_o_texto_limpo_no_lugar_do_cru() {
+        let feedback = FakeFeedback::default();
+        let entrega = FakeEntrega::default();
+        let mut machine = nova_machine_com_limpeza(
+            FakeEngine::sucesso("éé tipo oi mundo"),
+            FakeLimpeza::sucesso("Oi, mundo."),
+            config_limpeza_habilitada(),
+            entrega.clone(),
+            feedback.clone(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Copiou("Oi, mundo.".to_string())));
+        assert_eq!(
+            feedback.events(),
+            vec![
+                Event::Iniciou,
+                Event::Encerrou,
+                Event::Concluiu("Oi, mundo.".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn limpeza_desabilitada_nunca_e_chamada_e_entrega_a_transcricao_crua() {
+        let feedback = FakeFeedback::default();
+        let entrega = FakeEntrega::default();
+        let limpeza = FakeLimpeza::sucesso("nunca deveria aparecer");
+        let mut machine = nova_machine_com_limpeza(
+            FakeEngine::sucesso("oi mundo"),
+            limpeza.clone(),
+            LimpezaConfig::desativada(),
+            entrega.clone(),
+            feedback.clone(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(!limpeza.foi_chamada());
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Copiou("oi mundo".to_string())));
+    }
+
+    #[test]
+    fn falha_da_limpeza_avisa_discretamente_e_entrega_a_transcricao_crua() {
+        let feedback = FakeFeedback::default();
+        let entrega = FakeEntrega::default();
+        let mut machine = nova_machine_com_limpeza(
+            FakeEngine::sucesso("oi mundo"),
+            FakeLimpeza::falha("API recusou a chamada"),
+            config_limpeza_habilitada(),
+            entrega.clone(),
+            feedback.clone(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Copiou("oi mundo".to_string())));
+        assert_eq!(
+            feedback.events(),
+            vec![
+                Event::Iniciou,
+                Event::Encerrou,
+                Event::Aviso(
+                    "Limpeza indisponível, entregando a transcrição crua: \
+                     API recusou a chamada"
+                        .to_string()
+                ),
+                Event::Concluiu("oi mundo".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn timeout_da_limpeza_avisa_discretamente_e_entrega_a_transcricao_crua() {
+        let feedback = FakeFeedback::default();
+        let entrega = FakeEntrega::default();
+        // Timeout curtíssimo com uma Limpeza que nunca libera: determinístico
+        // sem depender de tempo real de rede (ver `LimpezaBloqueante`).
+        let limpeza_config = LimpezaConfig {
+            habilitada: true,
+            timeout: std::time::Duration::from_millis(10),
+        };
+        let mut machine = Machine::new(
+            feedback.clone(),
+            FakeFonteDeAudio::default(),
+            FakeEngine::sucesso("oi mundo"),
+            LimpezaBloqueante,
+            limpeza_config,
+            entrega.clone(),
+            FakeFoco::default(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Copiou("oi mundo".to_string())));
+        assert_eq!(
+            feedback.events(),
+            vec![
+                Event::Iniciou,
+                Event::Encerrou,
+                Event::Aviso(
+                    "Limpeza indisponível, entregando a transcrição crua: \
+                     tempo limite da Limpeza excedido"
+                        .to_string()
+                ),
+                Event::Concluiu("oi mundo".to_string()),
             ]
         );
     }

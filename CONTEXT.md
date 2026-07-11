@@ -131,3 +131,33 @@ preparar o Engine cloud. Sem chave salva, o Daemon falha na inicialização com
 uma mensagem instruindo a rodar `set-key`. Falha de rede ou da API cloud não
 cai silenciosamente para o Engine local — vira uma notificação de falha do
 Ditado, igual a qualquer outra falha do Engine.
+
+## Limpeza por LLM (OpenAI/Anthropic)
+
+Com `[limpeza] habilitada = true` no `config.toml`, a Transcrição crua passa
+por um LLM (`provedor = "openai" | "anthropic"`, `modelo` configurável) que
+remove hesitações e corrige gramática/pontuação antes da Entrega. A Limpeza
+fica no caminho crítico do Ditado com um timeout (`timeout_ms`, default
+4000ms, ver [`evervox_core::LimpezaConfig`]): estourou ou falhou, o núcleo
+entrega a Transcrição crua mesmo assim, com uma notificação discreta — o
+Ditado nunca fica refém da rede. Com `habilitada = false` (o default), a
+Limpeza nunca é chamada — nenhuma chave de API é exigida.
+
+A Limpeza é orientada por `[limpeza] instrucoes` (texto livre, ex.: "expanda
+siglas") e `[limpeza] pontuacao_falada` (liga/desliga a conversão de
+"vírgula", "ponto", "nova linha" etc. nos caracteres correspondentes), além
+do `vocabulario` (nível raiz da config): nomes próprios/jargão que orientam
+tanto a Limpeza (grafia correta) quanto o Engine (hint de transcrição, via
+`prompt` na API da OpenAI ou `initial_prompt` no whisper.cpp). O prompt de
+sistema da Limpeza é restrito a limpar — nunca parafrasear, resumir ou
+inventar conteúdo (ver `crates/daemon/src/limpeza.rs`).
+
+A chave de API segue a mesma regra do Engine cloud — guardada no GNOME
+Keyring via `evervox set-key openai` ou `evervox set-key anthropic` (a chave
+`openai` é compartilhada com o Engine cloud, é a mesma conta). Sem chave
+salva para o provedor escolhido, o Daemon falha na inicialização com uma
+mensagem instruindo a rodar `set-key`.
+
+Nota de design (ADR 0003): a chamada de LLM da Limpeza nasce preparada para
+também fundir a Tradução (ticket futuro) numa única chamada, sem mudar como o
+núcleo a invoca.
