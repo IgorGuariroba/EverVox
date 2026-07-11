@@ -9,3 +9,7 @@ notify-rust = { version = "4", default-features = false, features = ["z-with-tok
 anyhow = "1"
 cpal = "0.15"
 hound = "3.5"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+whisper-rs = "0.16"
