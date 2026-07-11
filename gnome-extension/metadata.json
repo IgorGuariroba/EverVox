@@ -1,7 +1,7 @@
 {
   "uuid": "evervox@evervox.local",
   "name": "EverVox",
-  "description": "Expõe o app focado via D-Bus para o Daemon do EverVox decidir o atalho de colar (Ctrl+V, ou Ctrl+Shift+V em terminais).",
+  "description": "Expõe o app focado via D-Bus para o Daemon do EverVox decidir o atalho de colar (Ctrl+V, ou Ctrl+Shift+V em terminais) e hospeda o Overlay de estado do Ditado (gravando/processando).",
   "shell-version": ["45", "46", "47", "48"],
   "url": "https://github.com/IgorGuariroba/EverVox"
 }

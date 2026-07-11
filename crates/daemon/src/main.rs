@@ -22,14 +22,26 @@ use foco::FocoGnome;
 use microfone::MicrofoneCpal;
 use notify_rust::Notification;
 use std::process::Command;
+use std::thread;
 use tokio::sync::Mutex;
 use zbus::{connection, interface};
 
-/// Feedback sonoro e por notificação real do Ditado completo: sons do
-/// freedesktop sound theme via canberra e notificações via `notify-rust`.
-struct DaemonFeedback;
+/// Feedback sonoro, por notificação e por Overlay do Ditado completo: sons
+/// do freedesktop sound theme via canberra, notificações via `notify-rust` e
+/// o sinal D-Bus de estado que a extensão GNOME reflete no Overlay (ver
+/// `CONTEXT.md`). Sem D-Bus de sessão disponível, os dois primeiros seguem
+/// funcionando normalmente — só o Overlay não aparece.
+struct DaemonFeedback {
+    dbus: Option<zbus::blocking::Connection>,
+}
 
 impl DaemonFeedback {
+    fn nova() -> Self {
+        Self {
+            dbus: zbus::blocking::Connection::session().ok(),
+        }
+    }
+
     fn play(&self, event_id: &str) {
         if let Err(erro) = Command::new("canberra-gtk-play")
             .arg("-i")
@@ -50,6 +62,32 @@ impl DaemonFeedback {
             eprintln!("evervox-daemon: falha ao notificar: {erro}");
         }
     }
+
+    /// Emite o sinal de mudança de estado do Ditado que alimenta o Overlay
+    /// da extensão GNOME. `iniciou_gravacao`/`encerrou_gravacao` chegam
+    /// síncronas do handler D-Bus async do Toggle; os demais eventos chegam
+    /// de uma thread em segundo plano (ver
+    /// `evervox_core::Machine::despachar_processamento`). Para nunca
+    /// bloquear a runtime Tokio com a chamada bloqueante do zbus, o envio em
+    /// si roda sempre numa thread própria e de vida curta — o chamador não
+    /// espera o sinal sair.
+    fn emitir_estado(&self, estado: &str) {
+        let Some(connection) = self.dbus.clone() else {
+            return;
+        };
+        let estado = estado.to_string();
+        thread::spawn(move || {
+            if let Err(erro) = connection.emit_signal(
+                None::<&str>,
+                evervox_core::dbus::OBJECT_PATH,
+                evervox_core::dbus::INTERFACE_NAME,
+                evervox_core::dbus::SIGNAL_ESTADO,
+                &estado,
+            ) {
+                eprintln!("evervox-daemon: falha ao emitir sinal de estado do Overlay: {erro}");
+            }
+        });
+    }
 }
 
 /// Tamanho máximo do trecho da Transcrição exibido na notificação de
@@ -68,10 +106,12 @@ fn resumir_para_notificacao(texto: &str) -> String {
 impl Feedback for DaemonFeedback {
     fn iniciou_gravacao(&mut self) {
         self.play("message-new-instant");
+        self.emitir_estado("gravando");
     }
 
     fn encerrou_gravacao(&mut self) {
         self.play("complete");
+        self.emitir_estado("processando");
     }
 
     fn concluiu_ditado(&mut self, texto: &str) {
@@ -80,6 +120,7 @@ impl Feedback for DaemonFeedback {
             &format!("Ditado concluído: \"{resumo}\""),
             notify_rust::Urgency::Normal,
         );
+        self.emitir_estado("ocioso");
     }
 
     fn ditado_silencioso(&mut self) {
@@ -87,6 +128,7 @@ impl Feedback for DaemonFeedback {
             "Nenhuma fala detectada no Ditado.",
             notify_rust::Urgency::Low,
         );
+        self.emitir_estado("ocioso");
     }
 
     fn ditado_no_clipboard_sem_colar(&mut self, texto: &str) {
@@ -96,6 +138,7 @@ impl Feedback for DaemonFeedback {
             &format!("Não foi possível colar automaticamente: \"{resumo}\" está no clipboard, cole com Ctrl+V."),
             notify_rust::Urgency::Normal,
         );
+        self.emitir_estado("ocioso");
     }
 
     fn falha_ditado(&mut self, mensagem: &str) {
@@ -104,6 +147,7 @@ impl Feedback for DaemonFeedback {
             &format!("O Ditado falhou: {mensagem}"),
             notify_rust::Urgency::Normal,
         );
+        self.emitir_estado("ocioso");
     }
 
     fn aviso(&mut self, mensagem: &str) {
@@ -321,7 +365,7 @@ async fn main() -> zbus::Result<()> {
 
     let service = DaemonService {
         machine: Mutex::new(Machine::new(
-            DaemonFeedback,
+            DaemonFeedback::nova(),
             MicrofoneCpal::default(),
             engine,
             limpeza,

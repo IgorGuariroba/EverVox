@@ -18,6 +18,13 @@ pub mod dbus {
     pub const SERVICE_NAME: &str = "com.evervox.Daemon";
     pub const OBJECT_PATH: &str = "/com/evervox/Daemon";
     pub const INTERFACE_NAME: &str = "com.evervox.Daemon1";
+
+    /// Sinal emitido pelo Daemon a cada mudança de estado do Ditado, para o
+    /// Overlay da extensão GNOME (ver `CONTEXT.md` e
+    /// `gnome-extension/extension.js`). Corpo: uma string
+    /// `"gravando" | "processando" | "ocioso"`. A extensão apenas reflete o
+    /// estado recebido, sem lógica de negócio própria.
+    pub const SIGNAL_ESTADO: &str = "Estado";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
