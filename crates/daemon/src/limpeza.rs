@@ -74,8 +74,44 @@ fn prompt_sistema(contexto: &ContextoLimpeza) -> String {
     prompt
 }
 
+/// Constrói o cliente HTTP bloqueante compartilhado pelos provedores da
+/// Limpeza, com o timeout do caminho crítico já embutido — defesa em
+/// profundidade além do timeout que o núcleo já impõe (ver
+/// `evervox_core::LimpezaExecucao`).
+fn cliente_http(timeout: Duration) -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .expect("cliente HTTP da Limpeza deveria ser construível")
+}
+
+/// Envia a requisição e traduz falha de rede ou status HTTP de erro num
+/// [`ErroLimpeza`] claro, sem expor a chave de API (que nunca entra no corpo
+/// ou nos headers de erro devolvidos pelo provedor). Compartilhado pelos
+/// provedores: só o corpo da requisição e o formato da resposta variam.
+fn enviar_e_checar(
+    requisicao: reqwest::blocking::RequestBuilder,
+    servico: &str,
+) -> Result<reqwest::blocking::Response, ErroLimpeza> {
+    let resposta = requisicao.send().map_err(|erro| {
+        ErroLimpeza(format!(
+            "falha de rede ao chamar a API da {servico}: {erro}"
+        ))
+    })?;
+
+    if !resposta.status().is_success() {
+        let status = resposta.status();
+        let corpo_erro = resposta.text().unwrap_or_default();
+        return Err(ErroLimpeza(format!(
+            "API da {servico} recusou a limpeza ({status}): {corpo_erro}"
+        )));
+    }
+
+    Ok(resposta)
+}
+
 /// Usada quando `limpeza.habilitada = false` na config: o núcleo pula a
-/// Limpeza inteiramente nesse caso (ver [`evervox_core::LimpezaConfig`] e
+/// Limpeza inteiramente nesse caso (ver [`evervox_core::LimpezaExecucao`] e
 /// `Machine`), então isto nunca é chamada de fato — mas o Daemon ainda
 /// precisa de um `Box<dyn Limpeza>` concreto para montar a `Machine`, sem
 /// exigir chave de API quando a Limpeza está desligada.
@@ -113,10 +149,7 @@ impl LimpezaOpenAI {
         timeout: Duration,
     ) -> Self {
         Self {
-            client: reqwest::blocking::Client::builder()
-                .timeout(timeout)
-                .build()
-                .expect("cliente HTTP da Limpeza (OpenAI) deveria ser construível"),
+            client: cliente_http(timeout),
             url,
             chave_api,
             modelo: modelo.to_string(),
@@ -170,23 +203,13 @@ impl Limpeza for LimpezaOpenAI {
             temperature: 0.0,
         };
 
-        let resposta = self
-            .client
-            .post(&self.url)
-            .bearer_auth(&self.chave_api)
-            .json(&corpo)
-            .send()
-            .map_err(|erro| {
-                ErroLimpeza(format!("falha de rede ao chamar a API da OpenAI: {erro}"))
-            })?;
-
-        if !resposta.status().is_success() {
-            let status = resposta.status();
-            let corpo_erro = resposta.text().unwrap_or_default();
-            return Err(ErroLimpeza(format!(
-                "API da OpenAI recusou a limpeza ({status}): {corpo_erro}"
-            )));
-        }
+        let resposta = enviar_e_checar(
+            self.client
+                .post(&self.url)
+                .bearer_auth(&self.chave_api)
+                .json(&corpo),
+            "OpenAI",
+        )?;
 
         let corpo: RespostaOpenAI = resposta
             .json()
@@ -232,10 +255,7 @@ impl LimpezaAnthropic {
         timeout: Duration,
     ) -> Self {
         Self {
-            client: reqwest::blocking::Client::builder()
-                .timeout(timeout)
-                .build()
-                .expect("cliente HTTP da Limpeza (Anthropic) deveria ser construível"),
+            client: cliente_http(timeout),
             url,
             chave_api,
             modelo: modelo.to_string(),
@@ -280,26 +300,14 @@ impl Limpeza for LimpezaAnthropic {
             }],
         };
 
-        let resposta = self
-            .client
-            .post(&self.url)
-            .header("x-api-key", &self.chave_api)
-            .header("anthropic-version", VERSAO_ANTHROPIC)
-            .json(&corpo)
-            .send()
-            .map_err(|erro| {
-                ErroLimpeza(format!(
-                    "falha de rede ao chamar a API da Anthropic: {erro}"
-                ))
-            })?;
-
-        if !resposta.status().is_success() {
-            let status = resposta.status();
-            let corpo_erro = resposta.text().unwrap_or_default();
-            return Err(ErroLimpeza(format!(
-                "API da Anthropic recusou a limpeza ({status}): {corpo_erro}"
-            )));
-        }
+        let resposta = enviar_e_checar(
+            self.client
+                .post(&self.url)
+                .header("x-api-key", &self.chave_api)
+                .header("anthropic-version", VERSAO_ANTHROPIC)
+                .json(&corpo),
+            "Anthropic",
+        )?;
 
         let corpo: RespostaAnthropic = resposta.json().map_err(|erro| {
             ErroLimpeza(format!("resposta inesperada da API da Anthropic: {erro}"))

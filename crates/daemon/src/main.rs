@@ -16,7 +16,7 @@ use engine_cloud::EngineCloud;
 use engine_whisper::EngineWhisper;
 use entrega::EntregaClipboard;
 use evervox_core::{
-    dbus, EngineSTT, ErroMicrofone, Feedback, Limpeza, LimpezaConfig, Machine, ResultadoToggle,
+    dbus, EngineSTT, ErroMicrofone, Feedback, Limpeza, LimpezaExecucao, Machine, ResultadoToggle,
 };
 use foco::FocoGnome;
 use microfone::MicrofoneCpal;
@@ -226,8 +226,11 @@ fn preparar_engine(config: &config::Config) -> anyhow::Result<Box<dyn EngineSTT>
 /// — tudo bloqueante, feito uma única vez na inicialização do Daemon, como o
 /// Engine (ver [`preparar_engine`]). Com a Limpeza desligada, nenhuma chave
 /// de API é exigida: o núcleo nem chega a chamá-la (ver
-/// [`evervox_core::LimpezaConfig`]).
-fn preparar_limpeza(config: &config::Config) -> anyhow::Result<Box<dyn Limpeza>> {
+/// [`evervox_core::LimpezaExecucao`]).
+fn preparar_limpeza(
+    config: &config::Config,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Box<dyn Limpeza>> {
     if !config.limpeza.habilitada {
         return Ok(Box::new(limpeza::LimpezaDesativada));
     }
@@ -237,7 +240,6 @@ fn preparar_limpeza(config: &config::Config) -> anyhow::Result<Box<dyn Limpeza>>
         vocabulario: config.vocabulario.clone(),
         pontuacao_falada: config.limpeza.pontuacao_falada,
     };
-    let timeout = std::time::Duration::from_millis(config.limpeza.timeout_ms);
 
     match config.limpeza.provedor {
         ProvedorLimpezaEscolhido::Openai => {
@@ -300,13 +302,14 @@ async fn main() -> zbus::Result<()> {
         std::process::exit(1);
     });
 
-    let limpeza = preparar_limpeza(&config).unwrap_or_else(|erro| {
+    let timeout_limpeza = std::time::Duration::from_millis(config.limpeza.timeout_ms);
+    let limpeza = preparar_limpeza(&config, timeout_limpeza).unwrap_or_else(|erro| {
         eprintln!("evervox-daemon: falha fatal ao preparar a Limpeza: {erro}");
         std::process::exit(1);
     });
-    let limpeza_config = LimpezaConfig {
+    let limpeza_config = LimpezaExecucao {
         habilitada: config.limpeza.habilitada,
-        timeout: std::time::Duration::from_millis(config.limpeza.timeout_ms),
+        timeout: timeout_limpeza,
     };
 
     let (entrega, aviso_colar_indisponivel) = EntregaClipboard::nova();

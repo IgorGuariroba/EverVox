@@ -178,12 +178,12 @@ impl Limpeza for Box<dyn Limpeza> {
 /// timeout além do qual a Transcrição crua é entregue mesmo assim (ver
 /// `CONTEXT.md` e [`Machine::despachar_processamento`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LimpezaConfig {
+pub struct LimpezaExecucao {
     pub habilitada: bool,
     pub timeout: std::time::Duration,
 }
 
-impl LimpezaConfig {
+impl LimpezaExecucao {
     /// Limpeza desligada: usado pelo Daemon quando `cleanup.enabled = false`
     /// e pelos testes do núcleo que não exercitam a Limpeza.
     pub fn desativada() -> Self {
@@ -300,7 +300,7 @@ pub struct Machine<F: Feedback, G: FonteDeAudio, E: EngineSTT, L: Limpeza, D: En
     gravador: Gravador<G>,
     engine: Arc<Mutex<E>>,
     limpeza: Arc<Mutex<L>>,
-    limpeza_config: LimpezaConfig,
+    limpeza_config: LimpezaExecucao,
     entrega: Arc<Mutex<D>>,
     foco: Arc<Mutex<O>>,
     processamentos: Vec<JoinHandle<()>>,
@@ -320,7 +320,7 @@ where
         fonte_de_audio: G,
         engine: E,
         limpeza: L,
-        limpeza_config: LimpezaConfig,
+        limpeza_config: LimpezaExecucao,
         entrega: D,
         foco: O,
     ) -> Self {
@@ -666,7 +666,7 @@ mod tests {
 
     /// Limpeza fake que bloqueia indefinidamente — usado para exercitar o
     /// timeout do núcleo sem depender de uma API real. Combinada com um
-    /// timeout curtíssimo em [`LimpezaConfig`], o teste fica determinístico:
+    /// timeout curtíssimo em [`LimpezaExecucao`], o teste fica determinístico:
     /// a thread nunca é liberada, então `recv_timeout` sempre vence.
     struct LimpezaBloqueante;
 
@@ -834,7 +834,7 @@ mod tests {
             fonte,
             engine,
             FakeLimpeza::default(),
-            LimpezaConfig::desativada(),
+            LimpezaExecucao::desativada(),
             entrega,
             foco,
         )
@@ -1232,7 +1232,7 @@ mod tests {
             FakeFonteDeAudio::default(),
             engine,
             FakeLimpeza::default(),
-            LimpezaConfig::desativada(),
+            LimpezaExecucao::desativada(),
             entrega.clone(),
             FakeFoco::default(),
         );
@@ -1275,7 +1275,7 @@ mod tests {
     fn nova_machine_com_limpeza(
         engine: FakeEngine,
         limpeza: FakeLimpeza,
-        limpeza_config: LimpezaConfig,
+        limpeza_config: LimpezaExecucao,
         entrega: FakeEntrega,
         feedback: FakeFeedback,
     ) -> MachineDeTeste<FakeLimpeza> {
@@ -1290,8 +1290,8 @@ mod tests {
         )
     }
 
-    fn config_limpeza_habilitada() -> LimpezaConfig {
-        LimpezaConfig {
+    fn config_limpeza_habilitada() -> LimpezaExecucao {
+        LimpezaExecucao {
             habilitada: true,
             timeout: std::time::Duration::from_secs(2),
         }
@@ -1334,7 +1334,7 @@ mod tests {
         let mut machine = nova_machine_com_limpeza(
             FakeEngine::sucesso("oi mundo"),
             limpeza.clone(),
-            LimpezaConfig::desativada(),
+            LimpezaExecucao::desativada(),
             entrega.clone(),
             feedback.clone(),
         );
@@ -1389,7 +1389,7 @@ mod tests {
         let entrega = FakeEntrega::default();
         // Timeout curtíssimo com uma Limpeza que nunca libera: determinístico
         // sem depender de tempo real de rede (ver `LimpezaBloqueante`).
-        let limpeza_config = LimpezaConfig {
+        let limpeza_config = LimpezaExecucao {
             habilitada: true,
             timeout: std::time::Duration::from_millis(10),
         };
