@@ -1,18 +1,18 @@
-//! Persistência do áudio de um Ditado em disco, como WAV, para inspeção.
+//! Persistência do áudio de uma Gravação em disco, como WAV, para inspeção.
 
 use evervox_core::AudioGravado;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Salva o áudio completo de uma Gravação como WAV mono no diretório de
-/// dados do usuário (`$XDG_DATA_HOME/evervox/ditados`, ou
-/// `~/.local/share/evervox/ditados`) e retorna o caminho do arquivo.
+/// dados do usuário (`$XDG_DATA_HOME/evervox/gravacoes`, ou
+/// `~/.local/share/evervox/gravacoes`) e retorna o caminho do arquivo.
 pub fn salvar(audio: &AudioGravado) -> anyhow::Result<PathBuf> {
-    let dir = diretorio_ditados()?;
+    let dir = diretorio_gravacoes()?;
     std::fs::create_dir_all(&dir)?;
 
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-    let caminho = dir.join(format!("ditado-{timestamp}.wav"));
+    let caminho = dir.join(format!("gravacao-{timestamp}.wav"));
 
     let spec = hound::WavSpec {
         channels: 1,
@@ -29,11 +29,11 @@ pub fn salvar(audio: &AudioGravado) -> anyhow::Result<PathBuf> {
     Ok(caminho)
 }
 
-fn diretorio_ditados() -> anyhow::Result<PathBuf> {
+fn diretorio_gravacoes() -> anyhow::Result<PathBuf> {
     if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(xdg_data_home).join("evervox/ditados"));
+        return Ok(PathBuf::from(xdg_data_home).join("evervox/gravacoes"));
     }
     let home = std::env::var("HOME")
-        .map_err(|_| anyhow::anyhow!("HOME não definido: não sei onde salvar o Ditado"))?;
-    Ok(PathBuf::from(home).join(".local/share/evervox/ditados"))
+        .map_err(|_| anyhow::anyhow!("HOME não definido: não sei onde salvar a Gravação"))?;
+    Ok(PathBuf::from(home).join(".local/share/evervox/gravacoes"))
 }

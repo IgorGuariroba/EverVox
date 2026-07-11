@@ -50,7 +50,7 @@ impl DaemonService {
         match resultado {
             Ok(ResultadoToggle::Gravando) => "gravando".to_string(),
             Ok(ResultadoToggle::Ocioso { audio }) => {
-                salvar_ditado(audio).await;
+                salvar_gravacao(audio).await;
                 "ocioso".to_string()
             }
             Err(erro) => {
@@ -61,14 +61,14 @@ impl DaemonService {
     }
 }
 
-async fn salvar_ditado(audio: evervox_core::AudioGravado) {
+async fn salvar_gravacao(audio: evervox_core::AudioGravado) {
     match wav::salvar(&audio) {
-        Ok(caminho) => eprintln!("evervox-daemon: Ditado salvo em {}", caminho.display()),
+        Ok(caminho) => eprintln!("evervox-daemon: Gravação salva em {}", caminho.display()),
         Err(erro) => {
-            eprintln!("evervox-daemon: falha ao salvar o Ditado como WAV: {erro}");
+            eprintln!("evervox-daemon: falha ao salvar a Gravação como WAV: {erro}");
             let _ = Notification::new()
                 .summary("EverVox")
-                .body(&format!("Falha ao salvar o áudio do Ditado: {erro}"))
+                .body(&format!("Falha ao salvar o áudio da Gravação: {erro}"))
                 .show_async()
                 .await;
         }

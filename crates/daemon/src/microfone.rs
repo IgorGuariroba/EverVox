@@ -4,6 +4,12 @@
 //! O `cpal::Stream` não é `Send`, então ele é aberto, mantido vivo e
 //! encerrado inteiramente dentro de uma thread dedicada; comunicação com o
 //! resto do Daemon acontece por canais.
+//!
+//! O indicador de microfone do GNOME Shell acende para qualquer cliente que
+//! abra um stream de captura via PipeWire/PulseAudio; o backend ALSA do
+//! `cpal` chega até lá pelo roteamento padrão do ALSA para o servidor de som
+//! do sistema. Isso depende da configuração do sistema (fora do controle
+//! deste código) e não tem como ser verificado automaticamente em testes.
 
 use crate::audio::{converter_para_pipeline, EstadoResample};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
