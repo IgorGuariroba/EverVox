@@ -112,6 +112,32 @@ Contrato D-Bus (mantenha `gnome-extension/extension.js` e
 A lista de identificadores tratados como terminal é configurável em
 `terminais_conhecidos` no `config.toml` do Daemon.
 
+## Overlay de estado (extensão GNOME)
+
+O Overlay é o indicador flutuante que mostra "gravando" durante a captura e
+"processando" enquanto o Engine/Limpeza/Entrega rodam, e some quando o
+Ditado termina (entrega, silêncio ou falha). O Daemon emite um sinal D-Bus a
+cada mudança de estado; a extensão apenas reflete o texto correspondente —
+nenhuma lógica de negócio no JS. O Overlay não rouba foco nem intercepta
+cliques (`affectsInputRegion: false` em `Main.layoutManager.addChrome`).
+
+Contrato D-Bus (mantenha `gnome-extension/extension.js` e
+`crates/core/src/lib.rs::dbus` em sincronia se mudar):
+
+- objeto: `/com/evervox/Daemon`
+- interface: `com.evervox.Daemon1`
+- sinal: `Estado(s)` — corpo `"gravando" | "processando" | "ocioso"`
+
+O sinal é emitido por uma conexão D-Bus própria do Daemon que não reivindica
+nenhum nome de barramento (só a conexão que serve `Toggle` reivindica
+`com.evervox.Daemon`), então a extensão assina sem filtrar por remetente —
+só por objeto/interface/sinal.
+
+Sem D-Bus de sessão disponível na inicialização do Daemon, ou sem a
+extensão instalada/habilitada, o sinal simplesmente não tem quem o receba:
+o Ditado segue funcionando só com os beeps e notificações (ver `Feedback`
+em `crates/core/src/lib.rs`).
+
 ## Engine cloud (OpenAI) e chaves de API
 
 Com `engine = "cloud"` no `config.toml`, o Ditado é transcrito pela API de
