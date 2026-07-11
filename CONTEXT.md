@@ -17,8 +17,35 @@ O texto literal produzido pelo engine de STT, antes de qualquer limpeza. É o fa
 _Avoid_: rascunho, texto bruto
 
 **Limpeza**:
-Pós-processamento opcional da Transcrição crua por LLM: remove hesitações, corrige gramática e pontuação. Fica no caminho crítico do Ditado, limitada por timeout.
+Pós-processamento opcional da Transcrição crua por LLM: remove hesitações, corrige gramática e pontuação, orientado pelas Instruções da Limpeza e pelo Vocabulário. Fica no caminho crítico do Ditado, limitada por timeout.
 _Avoid_: interpretação, correção (interpretação sugere comandos de voz, que estão fora do escopo)
+
+**Tradução**:
+Etapa opcional do Ditado que converte o texto do Idioma de entrada para o Idioma de saída. Independente da Limpeza (cada uma liga/desliga sozinha); em falha ou timeout, a Transcrição crua é entregue mesmo assim.
+_Avoid_: translate (o modo do Whisper, que só verte para inglês)
+
+**Idioma de entrada**:
+O idioma falado na Gravação, que orienta o Engine na transcrição.
+_Avoid_: idioma (sozinho — ambíguo desde que entrada e saída podem diferir)
+
+**Idioma de saída**:
+O idioma do texto entregue ao app focado. Quando igual ao Idioma de entrada, não há Tradução.
+
+**Vocabulário**:
+Termos do usuário (nomes próprios, jargão) que orientam tanto o Engine quanto a Limpeza para grafias corretas.
+_Avoid_: dicionário, glossário (glossário é este documento)
+
+**Instruções da Limpeza**:
+Texto livre do usuário que estende o comportamento da Limpeza (ex.: "expanda siglas", "mantenha tom informal").
+_Avoid_: prompt (detalhe de implementação)
+
+**Pontuação falada**:
+Marcas ditadas em voz ("vírgula", "nova linha") que a Limpeza converte nos caracteres correspondentes. É formatação de ditado, não comando de voz — interpretação de intenção segue fora do escopo.
+_Avoid_: comandos de voz, comandos ditados
+
+**Preferências**:
+A interface gráfica de configuração do EverVox, hospedada nas prefs da extensão GNOME.
+_Avoid_: settings, painel de controle
 
 **Engine**:
 O motor de STT que transcreve o áudio, escolhido por configuração estática: `local` (Whisper na máquina) ou `cloud` (API externa). Nunca alterna sozinho em tempo de execução.
