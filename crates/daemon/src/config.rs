@@ -20,6 +20,48 @@ pub enum Engine {
     Cloud,
 }
 
+/// O provedor de LLM que executa a Limpeza, escolhido de forma estática pela
+/// config, como o [`Engine`]. Cada provedor exige a chave salva via
+/// `evervox set-key <provedor>` (ver [`crate::limpeza`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProvedorLimpeza {
+    #[default]
+    Openai,
+    Anthropic,
+}
+
+/// Configuração da Limpeza (ver `CONTEXT.md`): se está ligada, o provedor e
+/// modelo de LLM, o timeout do caminho crítico e os parâmetros do usuário que
+/// a orientam (Instruções da Limpeza, Pontuação falada).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfigLimpeza {
+    pub habilitada: bool,
+    pub provedor: ProvedorLimpeza,
+    pub modelo: String,
+    pub timeout_ms: u64,
+    /// Instruções da Limpeza: texto livre que estende o comportamento (ver
+    /// `CONTEXT.md`), ex.: "expanda siglas".
+    pub instrucoes: String,
+    /// Se marcas de Pontuação falada ("vírgula", "nova linha") viram os
+    /// caracteres correspondentes.
+    pub pontuacao_falada: bool,
+}
+
+impl Default for ConfigLimpeza {
+    fn default() -> Self {
+        Self {
+            habilitada: false,
+            provedor: ProvedorLimpeza::default(),
+            modelo: "gpt-4o-mini".to_string(),
+            timeout_ms: 4_000,
+            instrucoes: String::new(),
+            pontuacao_falada: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -30,6 +72,11 @@ pub struct Config {
     /// tratados como terminal na Entrega. Comparação sem diferenciar
     /// maiúsculas/minúsculas (ver [`crate::foco::decidir_atalho`]).
     pub terminais_conhecidos: Vec<String>,
+    pub limpeza: ConfigLimpeza,
+    /// Vocabulário do usuário (nomes próprios, jargão): orienta tanto o
+    /// Engine (hint de transcrição) quanto a Limpeza (grafia correta), ver
+    /// `CONTEXT.md`.
+    pub vocabulario: Vec<String>,
 }
 
 impl Default for Config {
@@ -53,6 +100,8 @@ impl Default for Config {
             .into_iter()
             .map(str::to_string)
             .collect(),
+            limpeza: ConfigLimpeza::default(),
+            vocabulario: Vec::new(),
         }
     }
 }
@@ -100,6 +149,45 @@ mod tests {
     fn engine_cloud_e_lido_da_config_toml() {
         let config: Config = toml::from_str("engine = \"cloud\"").unwrap();
         assert_eq!(config.engine, Engine::Cloud);
+    }
+
+    #[test]
+    fn limpeza_vem_desligada_por_padrao() {
+        let config = Config::default();
+        assert!(!config.limpeza.habilitada);
+        assert_eq!(config.limpeza.provedor, ProvedorLimpeza::Openai);
+        assert_eq!(config.limpeza.timeout_ms, 4_000);
+        assert!(config.limpeza.pontuacao_falada);
+        assert!(config.vocabulario.is_empty());
+    }
+
+    #[test]
+    fn limpeza_e_lida_da_config_toml() {
+        let config: Config = toml::from_str(
+            r#"
+            vocabulario = ["EverVox", "GNOME"]
+
+            [limpeza]
+            habilitada = true
+            provedor = "anthropic"
+            modelo = "claude-3-5-haiku-latest"
+            timeout_ms = 2000
+            instrucoes = "expanda siglas"
+            pontuacao_falada = false
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.limpeza.habilitada);
+        assert_eq!(config.limpeza.provedor, ProvedorLimpeza::Anthropic);
+        assert_eq!(config.limpeza.modelo, "claude-3-5-haiku-latest");
+        assert_eq!(config.limpeza.timeout_ms, 2000);
+        assert_eq!(config.limpeza.instrucoes, "expanda siglas");
+        assert!(!config.limpeza.pontuacao_falada);
+        assert_eq!(
+            config.vocabulario,
+            vec!["EverVox".to_string(), "GNOME".to_string()]
+        );
     }
 
     #[test]

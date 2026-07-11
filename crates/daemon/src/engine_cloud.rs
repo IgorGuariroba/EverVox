@@ -17,21 +17,38 @@ pub struct EngineCloud {
     url_transcricoes: String,
     chave_api: String,
     idioma: String,
+    /// Hint de transcrição montado a partir do Vocabulário do usuário (ver
+    /// `CONTEXT.md`): nomes próprios e jargão que orientam a API a acertar a
+    /// grafia. Vazio quando não há Vocabulário configurado.
+    prompt_vocabulario: String,
 }
 
 impl EngineCloud {
     /// Constrói o Engine cloud contra a API da OpenAI. `chave_api` vem do
     /// GNOME Keyring (ver `evervox_segredo`), nunca de config ou ambiente.
-    pub fn nova(chave_api: String, idioma: &str) -> Self {
-        Self::com_url(URL_TRANSCRICOES_OPENAI.to_string(), chave_api, idioma)
+    /// `vocabulario` vira o hint de transcrição enviado à API (ver
+    /// `CONTEXT.md`).
+    pub fn nova(chave_api: String, idioma: &str, vocabulario: &[String]) -> Self {
+        Self::com_url(
+            URL_TRANSCRICOES_OPENAI.to_string(),
+            chave_api,
+            idioma,
+            vocabulario,
+        )
     }
 
-    fn com_url(url_transcricoes: String, chave_api: String, idioma: &str) -> Self {
+    fn com_url(
+        url_transcricoes: String,
+        chave_api: String,
+        idioma: &str,
+        vocabulario: &[String],
+    ) -> Self {
         Self {
             client: reqwest::blocking::Client::new(),
             url_transcricoes,
             chave_api,
             idioma: idioma.to_string(),
+            prompt_vocabulario: vocabulario.join(", "),
         }
     }
 }
@@ -51,10 +68,13 @@ impl EngineSTT for EngineCloud {
             .mime_str("audio/wav")
             .map_err(|erro| ErroEngine(format!("falha ao montar a requisição: {erro}")))?;
 
-        let form = reqwest::blocking::multipart::Form::new()
+        let mut form = reqwest::blocking::multipart::Form::new()
             .part("file", parte)
             .text("model", MODELO)
             .text("language", self.idioma.clone());
+        if !self.prompt_vocabulario.is_empty() {
+            form = form.text("prompt", self.prompt_vocabulario.clone());
+        }
 
         let resposta = self
             .client
@@ -93,17 +113,27 @@ mod tests {
     /// resposta HTTP crua, incluindo status line e headers). Usado para
     /// testar o Engine cloud na costura com a API, sem rede real.
     fn servidor_mock(resposta_http: String) -> String {
+        servidor_mock_capturando(resposta_http).0
+    }
+
+    /// Como [`servidor_mock`], mas também devolve a requisição crua recebida
+    /// (headers e corpo), para inspecionar o que o Engine enviou.
+    fn servidor_mock_capturando(
+        resposta_http: String,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endereco = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
-                let mut buffer = [0u8; 8192];
-                let _ = stream.read(&mut buffer);
+                let mut buffer = [0u8; 65536];
+                let lidos = stream.read(&mut buffer).unwrap_or(0);
+                let _ = tx.send(String::from_utf8_lossy(&buffer[..lidos]).to_string());
                 let _ = stream.write_all(resposta_http.as_bytes());
                 let _ = stream.flush();
             }
         });
-        format!("http://{endereco}")
+        (format!("http://{endereco}"), rx)
     }
 
     fn resposta_http(status: &str, corpo: &str) -> String {
@@ -123,7 +153,7 @@ mod tests {
     #[test]
     fn fluxo_feliz_devolve_o_texto_transcrito() {
         let url = servidor_mock(resposta_http("200 OK", r#"{"text":"oi mundo"}"#));
-        let mut engine = EngineCloud::com_url(url, "chave-de-teste".to_string(), "pt");
+        let mut engine = EngineCloud::com_url(url, "chave-de-teste".to_string(), "pt", &[]);
 
         let texto = engine.transcrever(&audio_de_teste()).unwrap();
 
@@ -136,12 +166,42 @@ mod tests {
             "401 Unauthorized",
             r#"{"error":"invalid_api_key"}"#,
         ));
-        let mut engine = EngineCloud::com_url(url, "chave-secreta".to_string(), "pt");
+        let mut engine = EngineCloud::com_url(url, "chave-secreta".to_string(), "pt", &[]);
 
         let erro = engine.transcrever(&audio_de_teste()).unwrap_err();
 
         assert!(erro.0.contains("401"));
         assert!(erro.0.contains("invalid_api_key"));
         assert!(!erro.0.contains("chave-secreta"));
+    }
+
+    #[test]
+    fn vocabulario_vira_hint_de_transcricao_na_requisicao() {
+        let (url, requisicoes) =
+            servidor_mock_capturando(resposta_http("200 OK", r#"{"text":"oi mundo"}"#));
+        let vocabulario = vec!["EverVox".to_string(), "GNOME".to_string()];
+        let mut engine =
+            EngineCloud::com_url(url, "chave-de-teste".to_string(), "pt", &vocabulario);
+
+        engine.transcrever(&audio_de_teste()).unwrap();
+
+        let requisicao = requisicoes
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(requisicao.contains("EverVox, GNOME"));
+    }
+
+    #[test]
+    fn sem_vocabulario_a_requisicao_nao_inclui_o_campo_prompt() {
+        let (url, requisicoes) =
+            servidor_mock_capturando(resposta_http("200 OK", r#"{"text":"oi mundo"}"#));
+        let mut engine = EngineCloud::com_url(url, "chave-de-teste".to_string(), "pt", &[]);
+
+        engine.transcrever(&audio_de_teste()).unwrap();
+
+        let requisicao = requisicoes
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(!requisicao.contains("name=\"prompt\""));
     }
 }
