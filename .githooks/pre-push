@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Verificações completas antes do push: build e testes do workspace.
+set -euo pipefail
+
+# Garante que o cargo esteja no PATH mesmo em ambientes não interativos (GUIs, IDEs).
+command -v cargo >/dev/null 2>&1 || export PATH="$HOME/.cargo/bin:$PATH"
+
+# Bloqueia push direto para main (proteção local; o GitHub também bloqueia via ruleset).
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+    if [[ "$remote_ref" == "refs/heads/main" ]]; then
+        echo "[pre-push] Push direto para 'main' bloqueado. Abra um Pull Request." >&2
+        exit 1
+    fi
+done
+
+echo "[pre-push] cargo test"
+cargo test --workspace || {
+    echo "[pre-push] Testes falharam. Corrija antes de dar push." >&2
+    exit 1
+}
+
+echo "[pre-push] OK"
