@@ -13,3 +13,5 @@ zbus = { workspace = true }
 tokio = { workspace = true }
 notify-rust = { workspace = true }
 anyhow = { workspace = true }
+cpal = { workspace = true }
+hound = { workspace = true }
