@@ -52,3 +52,52 @@ jobs:
           if command -v shellcheck >/dev/null 2>&1; then
             shellcheck scripts/instalar.sh
           fi
+
+  # ── E2E: pipeline de Ditado ponta a ponta em ambiente headless ──────────
+  # Job separado e NÃO-bloqueante: falha aqui não trava o merge.
+  # Promover a bloqueante só depois de estabilizar por algumas semanas
+  # (ver issue #24).
+  e2e:
+    name: e2e (pipeline headless)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependências de sistema (PipeWire, Weston, STT, áudio)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pipewire wireplumber pipewire-pulse \
+            weston wl-clipboard \
+            dbus-daemon \
+            libespeak-ng1 python3 \
+            libcanberra0 \
+            cmake libclang-dev pkg-config libasound2-dev \
+            curl
+
+      - name: Instalar toolchain Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de dependências (Rust)
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache do modelo whisper (base)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/evervox-e2e
+          key: evervox-whisper-base-v1
+
+      # O dbus-daemon no ubuntu-latest pode estar ausente (dbus-user-session
+      # substituiu). Garantimos que está disponível.
+      - name: Garantir dbus-daemon de sessão
+        run: |
+          if ! command -v dbus-daemon >/dev/null 2>&1; then
+            sudo apt-get install -y dbus-x11
+          fi
+
+      - name: E2E
+        run: ./scripts/e2e.sh
+        env:
+          EVERVOX_TIMEOUT_DAEMON: '120'
+          EVERVOX_TIMEOUT_DITADO: '60'
