@@ -44,3 +44,18 @@ git config core.hooksPath .githooks
 ```
 
 Push direto para `main` é bloqueado (hook local + ruleset no GitHub); todo merge entra por PR com o check `ci` verde.
+
+## Permissões de uinput (colar simulado)
+
+A Entrega simula `Ctrl+V` criando um teclado virtual via `uinput` (ver ADR 0001), o que exige acesso de escrita a `/dev/uinput`. Sem isso o Daemon segue funcionando — o texto do Ditado só fica no clipboard, sem colar automático — mas para o colar simulado funcionar:
+
+```bash
+# Regra udev: /dev/uinput acessível pelo grupo "input"
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-evervox-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# Usuário no grupo "input" (relogar a sessão depois)
+sudo usermod -aG input "$USER"
+```
+
+O Daemon verifica o acesso a `/dev/uinput` na inicialização e notifica claramente se as permissões estiverem ausentes.

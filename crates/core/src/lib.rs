@@ -44,12 +44,21 @@ impl DitadoState {
 pub trait Feedback: Send {
     fn iniciou_gravacao(&mut self);
     fn encerrou_gravacao(&mut self);
-    /// O Ditado foi transcrito e o texto foi entregue com sucesso.
+    /// O Ditado foi transcrito e o texto foi colado com sucesso no app focado
+    /// (o clipboard anterior já foi restaurado, ou a tentativa de restaurar
+    /// falhou — nesse caso um [`Feedback::aviso`] separado é emitido).
     fn concluiu_ditado(&mut self, texto: &str);
     /// A Gravação não continha fala detectável: nada foi entregue.
     fn ditado_silencioso(&mut self);
-    /// O Engine ou a Entrega falharam; a Transcrição (se houve) não chegou ao usuário.
+    /// O colar automático falhou; a Transcrição permanece no clipboard como
+    /// fallback manual (o usuário pode colar com Ctrl+V).
+    fn ditado_no_clipboard_sem_colar(&mut self, texto: &str);
+    /// O Engine ou a Entrega falharam antes de colar; nada chegou ao usuário.
     fn falha_ditado(&mut self, mensagem: &str);
+    /// Aviso não crítico do Ditado: o Ditado já foi concluído (ou falhou por
+    /// outro motivo já reportado), mas algo secundário não saiu como
+    /// esperado — ex.: não foi possível restaurar o clipboard anterior.
+    fn aviso(&mut self, mensagem: &str);
 }
 
 /// O áudio completo de uma Gravação, pronto para a próxima etapa do Ditado.
@@ -117,11 +126,29 @@ pub trait EngineSTT: Send {
     fn transcrever(&mut self, audio: &AudioGravado) -> Result<String, ErroEngine>;
 }
 
-/// Porta de Entrega: recebe a Transcrição (crua, ou limpa no futuro) e a
-/// entrega ao usuário. Implementações reais (clipboard, colar simulado)
-/// ficam no Daemon; testes usam um fake.
+/// Porta de Entrega (ver ADR 0001): entrega a Transcrição (crua, ou limpa no
+/// futuro) ao app focado via clipboard + colar simulado, restaurando o
+/// clipboard anterior depois. O núcleo orquestra os quatro passos, sempre
+/// nessa ordem — salvar, copiar, colar, restaurar — para que o comportamento
+/// externo (o que foi entregue e a restauração do clipboard) seja
+/// verificável na costura com uma Entrega fake, sem depender de detalhes do
+/// adaptador real. Implementações reais (`wl-copy`/`wl-paste` + `uinput`)
+/// ficam no Daemon.
 pub trait Entrega: Send {
-    fn entregar(&mut self, texto: &str) -> Result<(), ErroEntrega>;
+    /// Retrato do clipboard, salvo por [`salvar_clipboard`] para ser
+    /// devolvido a [`restaurar_clipboard`]. O núcleo não interpreta o
+    /// conteúdo — cada Entrega escolhe seu próprio formato (texto, imagem,
+    /// ambos, ou vazio).
+    type ClipboardSalvo: Send;
+
+    /// Salva o clipboard atual, antes de sobrescrevê-lo com a Transcrição.
+    fn salvar_clipboard(&mut self) -> Result<Self::ClipboardSalvo, ErroEntrega>;
+    /// Copia o texto da Transcrição para o clipboard.
+    fn copiar(&mut self, texto: &str) -> Result<(), ErroEntrega>;
+    /// Simula o atalho de colar (Ctrl+V) no app focado.
+    fn colar(&mut self) -> Result<(), ErroEntrega>;
+    /// Restaura o clipboard salvo por [`salvar_clipboard`].
+    fn restaurar_clipboard(&mut self, salvo: Self::ClipboardSalvo) -> Result<(), ErroEntrega>;
 }
 
 /// Acumula as amostras produzidas por uma [`FonteDeAudio`] durante uma
@@ -252,15 +279,53 @@ where
                 Ok(texto) if texto.trim().is_empty() => {
                     feedback.lock().unwrap().ditado_silencioso();
                 }
-                Ok(texto) => match entrega.lock().unwrap().entregar(texto.trim()) {
-                    Ok(()) => feedback.lock().unwrap().concluiu_ditado(texto.trim()),
-                    Err(erro) => feedback.lock().unwrap().falha_ditado(&erro.to_string()),
-                },
+                Ok(texto) => {
+                    let texto = texto.trim();
+                    let resultado =
+                        entregar_com_colar_simulado(&mut *entrega.lock().unwrap(), texto);
+                    let mut feedback = feedback.lock().unwrap();
+                    match resultado {
+                        Ok(None) => feedback.concluiu_ditado(texto),
+                        Ok(Some(erro_ao_restaurar)) => {
+                            feedback.concluiu_ditado(texto);
+                            feedback.aviso(&format!(
+                                "não foi possível restaurar o clipboard anterior: {erro_ao_restaurar}"
+                            ));
+                        }
+                        Err(FalhaEntrega::AoColar) => feedback.ditado_no_clipboard_sem_colar(texto),
+                        Err(FalhaEntrega::Outra(erro)) => feedback.falha_ditado(&erro.to_string()),
+                    }
+                }
                 Err(erro) => feedback.lock().unwrap().falha_ditado(&erro.to_string()),
             }
         });
         self.processamentos.push(handle);
     }
+}
+
+/// Falha da Entrega antes de colar (nada foi entregue) ou ao colar
+/// especificamente (o texto já está no clipboard como fallback manual — ver
+/// [`entregar_com_colar_simulado`]).
+enum FalhaEntrega {
+    AoColar,
+    Outra(ErroEntrega),
+}
+
+/// Executa a Entrega na ordem exigida pelo ADR 0001: salva o clipboard
+/// atual, copia a Transcrição, simula o colar e restaura o clipboard salvo.
+///
+/// Se o colar falhar, a Transcrição permanece no clipboard (não restaura) —
+/// é o fallback manual do usuário. Se só a restauração falhar (o colar já
+/// tinha funcionado), o Ditado é considerado concluído; a falha ao restaurar
+/// volta como `Ok(Some(erro))` para o chamador emitir um aviso não crítico.
+fn entregar_com_colar_simulado<D: Entrega>(
+    entrega: &mut D,
+    texto: &str,
+) -> Result<Option<ErroEntrega>, FalhaEntrega> {
+    let salvo = entrega.salvar_clipboard().map_err(FalhaEntrega::Outra)?;
+    entrega.copiar(texto).map_err(FalhaEntrega::Outra)?;
+    entrega.colar().map_err(|_| FalhaEntrega::AoColar)?;
+    Ok(entrega.restaurar_clipboard(salvo).err())
 }
 
 #[cfg(test)]
@@ -274,7 +339,9 @@ mod tests {
         Encerrou,
         Concluiu(String),
         Silencioso,
+        SemColar(String),
         Falha(String),
+        Aviso(String),
     }
 
     #[derive(Default, Clone)]
@@ -308,11 +375,25 @@ mod tests {
             self.events.lock().unwrap().push(Event::Silencioso);
         }
 
+        fn ditado_no_clipboard_sem_colar(&mut self, texto: &str) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(Event::SemColar(texto.to_string()));
+        }
+
         fn falha_ditado(&mut self, mensagem: &str) {
             self.events
                 .lock()
                 .unwrap()
                 .push(Event::Falha(mensagem.to_string()));
+        }
+
+        fn aviso(&mut self, mensagem: &str) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(Event::Aviso(mensagem.to_string()));
         }
     }
 
@@ -386,31 +467,91 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum EtapaEntrega {
+        Salvar,
+        Copiar,
+        Colar,
+        Restaurar,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum EntregaEvento {
+        Salvou,
+        Copiou(String),
+        Colou,
+        Restaurou(String),
+    }
+
+    /// Entrega fake: registra a ordem de chamadas (salvar/copiar/colar/
+    /// restaurar) e pode ser configurada para falhar numa etapa específica.
     #[derive(Default, Clone)]
     struct FakeEntrega {
-        textos: Arc<Mutex<Vec<String>>>,
-        falha: Option<String>,
+        eventos: Arc<Mutex<Vec<EntregaEvento>>>,
+        clipboard_anterior: String,
+        falhar_em: Option<EtapaEntrega>,
     }
 
     impl FakeEntrega {
-        fn textos_entregues(&self) -> Vec<String> {
-            self.textos.lock().unwrap().clone()
+        fn com_clipboard_anterior(texto: &str) -> Self {
+            Self {
+                clipboard_anterior: texto.to_string(),
+                ..Default::default()
+            }
         }
 
-        fn que_falha(mensagem: &str) -> Self {
+        fn que_falha_em(etapa: EtapaEntrega) -> Self {
             Self {
-                textos: Arc::new(Mutex::new(Vec::new())),
-                falha: Some(mensagem.to_string()),
+                falhar_em: Some(etapa),
+                ..Default::default()
             }
+        }
+
+        fn eventos(&self) -> Vec<EntregaEvento> {
+            self.eventos.lock().unwrap().clone()
         }
     }
 
     impl Entrega for FakeEntrega {
-        fn entregar(&mut self, texto: &str) -> Result<(), ErroEntrega> {
-            if let Some(motivo) = &self.falha {
-                return Err(ErroEntrega(motivo.clone()));
+        type ClipboardSalvo = String;
+
+        fn salvar_clipboard(&mut self) -> Result<String, ErroEntrega> {
+            if self.falhar_em == Some(EtapaEntrega::Salvar) {
+                return Err(ErroEntrega("falhou ao salvar o clipboard".to_string()));
             }
-            self.textos.lock().unwrap().push(texto.to_string());
+            self.eventos.lock().unwrap().push(EntregaEvento::Salvou);
+            Ok(self.clipboard_anterior.clone())
+        }
+
+        fn copiar(&mut self, texto: &str) -> Result<(), ErroEntrega> {
+            if self.falhar_em == Some(EtapaEntrega::Copiar) {
+                return Err(ErroEntrega("falhou ao copiar para o clipboard".to_string()));
+            }
+            self.eventos
+                .lock()
+                .unwrap()
+                .push(EntregaEvento::Copiou(texto.to_string()));
+            Ok(())
+        }
+
+        fn colar(&mut self) -> Result<(), ErroEntrega> {
+            if self.falhar_em == Some(EtapaEntrega::Colar) {
+                return Err(ErroEntrega("falhou ao simular o colar".to_string()));
+            }
+            self.eventos.lock().unwrap().push(EntregaEvento::Colou);
+            Ok(())
+        }
+
+        fn restaurar_clipboard(&mut self, salvo: String) -> Result<(), ErroEntrega> {
+            if self.falhar_em == Some(EtapaEntrega::Restaurar) {
+                return Err(ErroEntrega(
+                    "falhou ao restaurar o clipboard anterior".to_string(),
+                ));
+            }
+            self.eventos
+                .lock()
+                .unwrap()
+                .push(EntregaEvento::Restaurou(salvo));
             Ok(())
         }
     }
@@ -534,9 +675,9 @@ mod tests {
     }
 
     #[test]
-    fn fluxo_feliz_transcreve_e_entrega_a_transcricao() {
+    fn fluxo_feliz_salva_copia_cola_e_restaura_nessa_ordem() {
         let feedback = FakeFeedback::default();
-        let entrega = FakeEntrega::default();
+        let entrega = FakeEntrega::com_clipboard_anterior("conteúdo antigo");
         let mut machine = nova_machine(
             FakeFonteDeAudio::default(),
             FakeEngine::sucesso("oi mundo"),
@@ -548,7 +689,15 @@ mod tests {
         machine.toggle().unwrap();
         machine.aguardar_processamentos();
 
-        assert_eq!(entrega.textos_entregues(), vec!["oi mundo".to_string()]);
+        assert_eq!(
+            entrega.eventos(),
+            vec![
+                EntregaEvento::Salvou,
+                EntregaEvento::Copiou("oi mundo".to_string()),
+                EntregaEvento::Colou,
+                EntregaEvento::Restaurou("conteúdo antigo".to_string()),
+            ]
+        );
         assert_eq!(
             feedback.events(),
             vec![
@@ -560,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn ditado_silencioso_nao_entrega_nada() {
+    fn ditado_silencioso_nao_toca_a_entrega() {
         let feedback = FakeFeedback::default();
         let entrega = FakeEntrega::default();
         let mut machine = nova_machine(
@@ -574,7 +723,7 @@ mod tests {
         machine.toggle().unwrap();
         machine.aguardar_processamentos();
 
-        assert!(entrega.textos_entregues().is_empty());
+        assert!(entrega.eventos().is_empty());
         assert_eq!(
             feedback.events(),
             vec![Event::Iniciou, Event::Encerrou, Event::Silencioso]
@@ -582,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn falha_do_engine_notifica_e_nao_entrega_nada() {
+    fn falha_do_engine_notifica_e_nao_toca_a_entrega() {
         let feedback = FakeFeedback::default();
         let entrega = FakeEntrega::default();
         let mut machine = nova_machine(
@@ -596,7 +745,7 @@ mod tests {
         machine.toggle().unwrap();
         machine.aguardar_processamentos();
 
-        assert!(entrega.textos_entregues().is_empty());
+        assert!(entrega.eventos().is_empty());
         assert_eq!(
             feedback.events(),
             vec![
@@ -608,13 +757,102 @@ mod tests {
     }
 
     #[test]
-    fn falha_da_entrega_notifica() {
+    fn falha_ao_salvar_o_clipboard_notifica_e_nao_copia_nada() {
         let feedback = FakeFeedback::default();
-        let entrega = FakeEntrega::que_falha("clipboard indisponível");
+        let entrega = FakeEntrega::que_falha_em(EtapaEntrega::Salvar);
         let mut machine = nova_machine(
             FakeFonteDeAudio::default(),
             FakeEngine::sucesso("oi mundo"),
-            entrega,
+            entrega.clone(),
+            feedback.clone(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(entrega.eventos().is_empty());
+        assert_eq!(
+            feedback.events(),
+            vec![
+                Event::Iniciou,
+                Event::Encerrou,
+                Event::Falha("falha na entrega: falhou ao salvar o clipboard".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn falha_ao_copiar_notifica_e_nao_cola_nem_restaura() {
+        let feedback = FakeFeedback::default();
+        let entrega = FakeEntrega::que_falha_em(EtapaEntrega::Copiar);
+        let mut machine = nova_machine(
+            FakeFonteDeAudio::default(),
+            FakeEngine::sucesso("oi mundo"),
+            entrega.clone(),
+            feedback.clone(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        // Salvou o clipboard atual (para restaurar), mas a cópia falhou
+        // antes de tocar em colar/restaurar: o clipboard original nunca foi
+        // sobrescrito, então não há nada a restaurar.
+        assert_eq!(entrega.eventos(), vec![EntregaEvento::Salvou]);
+        assert_eq!(
+            feedback.events(),
+            vec![
+                Event::Iniciou,
+                Event::Encerrou,
+                Event::Falha("falha na entrega: falhou ao copiar para o clipboard".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn falha_ao_colar_mantem_o_texto_no_clipboard_como_fallback() {
+        let feedback = FakeFeedback::default();
+        let entrega = FakeEntrega::que_falha_em(EtapaEntrega::Colar);
+        let mut machine = nova_machine(
+            FakeFonteDeAudio::default(),
+            FakeEngine::sucesso("oi mundo"),
+            entrega.clone(),
+            feedback.clone(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        // Salvou e copiou (o texto está no clipboard), mas não colou nem
+        // restaurou: o clipboard fica com a Transcrição, não com o anterior.
+        assert_eq!(
+            entrega.eventos(),
+            vec![
+                EntregaEvento::Salvou,
+                EntregaEvento::Copiou("oi mundo".to_string()),
+            ]
+        );
+        assert_eq!(
+            feedback.events(),
+            vec![
+                Event::Iniciou,
+                Event::Encerrou,
+                Event::SemColar("oi mundo".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn falha_ao_restaurar_conclui_o_ditado_e_emite_um_aviso() {
+        let feedback = FakeFeedback::default();
+        let entrega = FakeEntrega::que_falha_em(EtapaEntrega::Restaurar);
+        let mut machine = nova_machine(
+            FakeFonteDeAudio::default(),
+            FakeEngine::sucesso("oi mundo"),
+            entrega.clone(),
             feedback.clone(),
         );
 
@@ -623,11 +861,24 @@ mod tests {
         machine.aguardar_processamentos();
 
         assert_eq!(
+            entrega.eventos(),
+            vec![
+                EntregaEvento::Salvou,
+                EntregaEvento::Copiou("oi mundo".to_string()),
+                EntregaEvento::Colou,
+            ]
+        );
+        assert_eq!(
             feedback.events(),
             vec![
                 Event::Iniciou,
                 Event::Encerrou,
-                Event::Falha("falha na entrega: clipboard indisponível".to_string())
+                Event::Concluiu("oi mundo".to_string()),
+                Event::Aviso(
+                    "não foi possível restaurar o clipboard anterior: \
+                     falha na entrega: falhou ao restaurar o clipboard anterior"
+                        .to_string()
+                ),
             ]
         );
     }
@@ -660,14 +911,19 @@ mod tests {
         // já está livre para um novo Toggle.
         let resultado = machine.toggle().unwrap();
         assert_eq!(resultado, ResultadoToggle::Gravando);
-        assert!(entrega.textos_entregues().is_empty());
+        assert!(entrega.eventos().is_empty());
 
         liberar_tx.send(()).unwrap();
         machine.aguardar_processamentos();
 
         assert_eq!(
-            entrega.textos_entregues(),
-            vec!["primeiro ditado".to_string()]
+            entrega.eventos(),
+            vec![
+                EntregaEvento::Salvou,
+                EntregaEvento::Copiou("primeiro ditado".to_string()),
+                EntregaEvento::Colou,
+                EntregaEvento::Restaurou(String::new()),
+            ]
         );
         assert_eq!(
             feedback.events(),
