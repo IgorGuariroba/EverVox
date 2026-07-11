@@ -45,3 +45,10 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --release
+
+      - name: Script de instalação (sintaxe + shellcheck)
+        run: |
+          bash -n scripts/instalar.sh
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck scripts/instalar.sh
+          fi

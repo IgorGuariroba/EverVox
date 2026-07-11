@@ -27,6 +27,18 @@ pub mod dbus {
     pub const SIGNAL_ESTADO: &str = "Estado";
 }
 
+/// Endereço D-Bus da extensão GNOME Shell do EverVox (ver ADR 0001 e
+/// `CONTEXT.md`): compartilhado entre o Daemon (`crates/daemon/src/foco.rs`,
+/// que consulta o app focado) e a CLI (`evervox status`, que só confirma que
+/// a extensão está respondendo). Mantenha em sincronia com
+/// `gnome-extension/extension.js` se mudar.
+pub mod dbus_extensao {
+    pub const SERVICE_NAME: &str = "org.gnome.Shell";
+    pub const OBJECT_PATH: &str = "/com/evervox/Extensao";
+    pub const INTERFACE_NAME: &str = "com.evervox.Extensao1";
+    pub const METODO_APP_FOCADO: &str = "AppFocado";
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DitadoState {
     Ocioso,
