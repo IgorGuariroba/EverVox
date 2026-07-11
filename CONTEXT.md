@@ -84,3 +84,23 @@ Contrato D-Bus (mantenha `gnome-extension/extension.js` e
 
 A lista de identificadores tratados como terminal é configurável em
 `terminais_conhecidos` no `config.toml` do Daemon.
+
+## Engine cloud (OpenAI) e chaves de API
+
+Com `engine = "cloud"` no `config.toml`, o Ditado é transcrito pela API de
+transcrição de áudio da OpenAI em vez do whisper.cpp local; `engine =
+"local"` (o default) continua usando o Engine local. A escolha é lida uma
+única vez na inicialização do Daemon — trocar de Engine exige reiniciá-lo.
+
+A chave de API nunca fica em config, log ou variável de ambiente: ela é
+guardada no GNOME Keyring (Secret Service) via
+
+```bash
+evervox set-key openai
+```
+
+que lê a chave de forma oculta no terminal e a salva; o Daemon a lê de lá ao
+preparar o Engine cloud. Sem chave salva, o Daemon falha na inicialização com
+uma mensagem instruindo a rodar `set-key`. Falha de rede ou da API cloud não
+cai silenciosamente para o Engine local — vira uma notificação de falha do
+Ditado, igual a qualquer outra falha do Engine.

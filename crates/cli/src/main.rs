@@ -7,8 +7,39 @@ async fn main() {
     let comando = std::env::args().nth(1);
     match comando.as_deref() {
         Some("toggle") => toggle().await,
+        Some("set-key") => set_key(std::env::args().nth(2)).await,
         _ => {
-            eprintln!("uso: evervox toggle");
+            eprintln!("uso: evervox toggle | evervox set-key <provedor>");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Lê a chave de API do provedor (ex.: `openai`) de forma oculta no
+/// terminal e a salva no GNOME Keyring via `evervox_segredo`. A chave nunca
+/// passa pelo Daemon, pela config ou por variável de ambiente.
+async fn set_key(provedor: Option<String>) {
+    let Some(provedor) = provedor else {
+        eprintln!("uso: evervox set-key <provedor>");
+        std::process::exit(1);
+    };
+
+    let chave = match rpassword::prompt_password(format!("Chave de API para '{provedor}': ")) {
+        Ok(chave) => chave,
+        Err(erro) => {
+            eprintln!("evervox: não foi possível ler a chave: {erro}");
+            std::process::exit(1);
+        }
+    };
+    if chave.trim().is_empty() {
+        eprintln!("evervox: chave vazia, nada foi salvo.");
+        std::process::exit(1);
+    }
+
+    match evervox_segredo::salvar(&provedor, &chave) {
+        Ok(()) => println!("Chave de '{provedor}' salva no GNOME Keyring."),
+        Err(erro) => {
+            eprintln!("evervox: falha ao salvar a chave: {erro}");
             std::process::exit(1);
         }
     }

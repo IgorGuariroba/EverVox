@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/daemon", "crates/cli"]
+members = ["crates/core", "crates/daemon", "crates/cli", "crates/segredo"]
 
 [workspace.dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"] }
@@ -11,6 +11,8 @@ cpal = "0.15"
 hound = "3.5"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart", "json"] }
 whisper-rs = "0.16"
 uinput = { version = "0.1", default-features = false }
+keyring = "4"
+rpassword = "7"

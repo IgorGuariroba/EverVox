@@ -7,11 +7,25 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// O Engine STT a usar no Ditado, escolhido de forma estática pela config
+/// (ver `CONTEXT.md`): nunca alterna sozinho em tempo de execução.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    /// whisper.cpp rodando na máquina (ver [`crate::engine_whisper`]).
+    #[default]
+    Local,
+    /// API da OpenAI; exige chave salva via `evervox set-key openai` (ver
+    /// [`crate::engine_cloud`]).
+    Cloud,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub idioma: String,
     pub modelo_local: String,
+    pub engine: Engine,
     /// Identificadores de app (WM_CLASS, como devolvido pela extensão GNOME)
     /// tratados como terminal na Entrega. Comparação sem diferenciar
     /// maiúsculas/minúsculas (ver [`crate::foco::decidir_atalho`]).
@@ -23,6 +37,7 @@ impl Default for Config {
         Self {
             idioma: "pt".to_string(),
             modelo_local: "base".to_string(),
+            engine: Engine::default(),
             terminais_conhecidos: [
                 "gnome-terminal-server",
                 "org.gnome.terminal",
@@ -71,13 +86,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_sao_pt_e_modelo_base() {
+    fn defaults_sao_pt_modelo_base_e_engine_local() {
         let config = Config::default();
         assert_eq!(config.idioma, "pt");
         assert_eq!(config.modelo_local, "base");
+        assert_eq!(config.engine, Engine::Local);
         assert!(config
             .terminais_conhecidos
             .contains(&"gnome-terminal-server".to_string()));
+    }
+
+    #[test]
+    fn engine_cloud_e_lido_da_config_toml() {
+        let config: Config = toml::from_str("engine = \"cloud\"").unwrap();
+        assert_eq!(config.engine, Engine::Cloud);
     }
 
     #[test]

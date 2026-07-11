@@ -126,6 +126,15 @@ pub trait EngineSTT: Send {
     fn transcrever(&mut self, audio: &AudioGravado) -> Result<String, ErroEngine>;
 }
 
+/// Permite ao Daemon escolher o Engine (local ou cloud) em tempo de
+/// inicialização e guardá-lo como `Box<dyn EngineSTT>` — a escolha é estática
+/// por config, mas o tipo concreto só é conhecido depois de ler essa config.
+impl EngineSTT for Box<dyn EngineSTT> {
+    fn transcrever(&mut self, audio: &AudioGravado) -> Result<String, ErroEngine> {
+        (**self).transcrever(audio)
+    }
+}
+
 /// Porta de Entrega (ver ADR 0001): entrega a Transcrição (crua, ou limpa no
 /// futuro) ao app focado via clipboard + colar simulado, restaurando o
 /// clipboard anterior depois. O núcleo orquestra os quatro passos, sempre
