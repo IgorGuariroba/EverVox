@@ -41,6 +41,8 @@ instalar_binarios() {
         *":$BIN_DIR:"*) ;;
         *)
             aviso "$BIN_DIR não está no PATH. Adicione a linha abaixo ao seu ~/.bashrc (ou ~/.profile) e relogue:"
+            # A linha é impressa literal (sem expandir), para o usuário colar no .bashrc.
+            # shellcheck disable=SC2016
             echo '    export PATH="$HOME/.local/bin:$PATH"'
             ;;
     esac
