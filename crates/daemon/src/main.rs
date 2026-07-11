@@ -1,4 +1,9 @@
-use evervox_core::{dbus, Feedback, Machine};
+mod audio;
+mod microfone;
+mod wav;
+
+use evervox_core::{dbus, ErroMicrofone, Feedback, Machine, ResultadoToggle};
+use microfone::MicrofoneCpal;
 use notify_rust::Notification;
 use std::process::Command;
 use tokio::sync::Mutex;
@@ -30,16 +35,53 @@ impl Feedback for SoundFeedback {
 }
 
 struct DaemonService {
-    machine: Mutex<Machine<SoundFeedback>>,
+    machine: Mutex<Machine<SoundFeedback, MicrofoneCpal>>,
 }
 
 #[interface(name = "com.evervox.Daemon1")]
 impl DaemonService {
     /// Aciona o Toggle do Ditado. Retorna o novo estado: "ocioso" | "gravando".
     async fn toggle(&self) -> String {
-        let mut machine = self.machine.lock().await;
-        machine.toggle().as_str().to_string()
+        let resultado = {
+            let mut machine = self.machine.lock().await;
+            machine.toggle()
+        };
+
+        match resultado {
+            Ok(ResultadoToggle::Gravando) => "gravando".to_string(),
+            Ok(ResultadoToggle::Ocioso { audio }) => {
+                salvar_gravacao(audio).await;
+                "ocioso".to_string()
+            }
+            Err(erro) => {
+                avisar_microfone_indisponivel(&erro).await;
+                "ocioso".to_string()
+            }
+        }
     }
+}
+
+async fn salvar_gravacao(audio: evervox_core::AudioGravado) {
+    match wav::salvar(&audio) {
+        Ok(caminho) => eprintln!("evervox-daemon: Gravação salva em {}", caminho.display()),
+        Err(erro) => {
+            eprintln!("evervox-daemon: falha ao salvar a Gravação como WAV: {erro}");
+            let _ = Notification::new()
+                .summary("EverVox")
+                .body(&format!("Falha ao salvar o áudio da Gravação: {erro}"))
+                .show_async()
+                .await;
+        }
+    }
+}
+
+async fn avisar_microfone_indisponivel(erro: &ErroMicrofone) {
+    eprintln!("evervox-daemon: {erro}");
+    let _ = Notification::new()
+        .summary("EverVox")
+        .body(&format!("Não foi possível iniciar a gravação: {erro}"))
+        .show_async()
+        .await;
 }
 
 /// Verifica se o tocador de som do freedesktop sound theme está no PATH.
@@ -74,7 +116,7 @@ async fn main() -> zbus::Result<()> {
     }
 
     let service = DaemonService {
-        machine: Mutex::new(Machine::new(SoundFeedback)),
+        machine: Mutex::new(Machine::new(SoundFeedback, MicrofoneCpal::default())),
     };
 
     let connection = connection::Builder::session()?
