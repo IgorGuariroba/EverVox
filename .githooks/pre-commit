@@ -17,4 +17,25 @@ cargo clippy --workspace --all-targets -- -D warnings || {
     exit 1
 }
 
+# Extensão GNOME: sintaxe do JS (ESM) e validade do metadata.json.
+if [[ -d gnome-extension ]]; then
+    if command -v node >/dev/null 2>&1; then
+        echo "[pre-commit] extensão GNOME: sintaxe JS"
+        for arquivo in gnome-extension/*.js; do
+            node --input-type=module --check <"$arquivo" || {
+                echo "[pre-commit] Erro de sintaxe em $arquivo." >&2
+                exit 1
+            }
+        done
+    else
+        echo "[pre-commit] aviso: 'node' ausente, pulando checagem de sintaxe da extensão GNOME." >&2
+    fi
+
+    echo "[pre-commit] extensão GNOME: metadata.json"
+    python3 -c "import json,sys; json.load(open('gnome-extension/metadata.json'))" || {
+        echo "[pre-commit] gnome-extension/metadata.json inválido." >&2
+        exit 1
+    }
+fi
+
 echo "[pre-commit] OK"

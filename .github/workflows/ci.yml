@@ -36,5 +36,12 @@ jobs:
       - name: Testes
         run: cargo test --workspace
 
+      - name: Extensão GNOME (sintaxe JS + metadata.json)
+        run: |
+          for arquivo in gnome-extension/*.js; do
+            node --input-type=module --check <"$arquivo"
+          done
+          python3 -c "import json; json.load(open('gnome-extension/metadata.json'))"
+
       - name: Build
         run: cargo build --workspace --release
