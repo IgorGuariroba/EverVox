@@ -1,10 +1,10 @@
 //! Entrega completa do Ditado (ADR 0001): clipboard + colar simulado. Salva
 //! o clipboard atual via `wl-paste`, copia a Transcrição via `wl-copy`,
-//! simula `Ctrl+V` com um teclado virtual `uinput` e restaura o clipboard
-//! salvo. A detecção de terminal (`Ctrl+Shift+V`) fica para o próximo
-//! ticket: aqui o colar é sempre `Ctrl+V`.
+//! simula o atalho de colar com um teclado virtual `uinput` — `Ctrl+V`, ou
+//! `Ctrl+Shift+V` quando o app focado é um terminal (ver [`Atalho`] e o
+//! módulo `foco`) — e restaura o clipboard salvo.
 
-use evervox_core::{Entrega, ErroEntrega};
+use evervox_core::{Atalho, Entrega, ErroEntrega};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use uinput::event::keyboard;
@@ -73,12 +73,15 @@ impl Entrega for EntregaClipboard {
         copiar_para_clipboard(texto.as_bytes(), None)
     }
 
-    fn colar(&mut self) -> Result<(), ErroEntrega> {
+    fn colar(&mut self, atalho: Atalho) -> Result<(), ErroEntrega> {
         let teclado = self
             .teclado
             .as_mut()
             .ok_or_else(|| ErroEntrega("teclado virtual (uinput) indisponível".to_string()))?;
-        simular_ctrl_v(teclado)
+        match atalho {
+            Atalho::Padrao => simular_ctrl_v(teclado),
+            Atalho::Terminal => simular_ctrl_shift_v(teclado),
+        }
     }
 
     fn restaurar_clipboard(&mut self, salvo: ClipboardSalvo) -> Result<(), ErroEntrega> {
@@ -196,13 +199,37 @@ fn limpar_clipboard() -> Result<(), ErroEntrega> {
 const PAUSA_APOS_COLAR: std::time::Duration = std::time::Duration::from_millis(150);
 
 fn simular_ctrl_v(teclado: &mut uinput::Device) -> Result<(), ErroEntrega> {
+    simular_combo(teclado, &[keyboard::Key::LeftControl], "Ctrl+V")
+}
+
+fn simular_ctrl_shift_v(teclado: &mut uinput::Device) -> Result<(), ErroEntrega> {
+    simular_combo(
+        teclado,
+        &[keyboard::Key::LeftControl, keyboard::Key::LeftShift],
+        "Ctrl+Shift+V",
+    )
+}
+
+/// Pressiona `modificadores` (na ordem dada), clica `V`, solta os
+/// modificadores na ordem inversa e sincroniza — o corpo comum de
+/// [`simular_ctrl_v`] e [`simular_ctrl_shift_v`]. `nome` é só para a
+/// mensagem de erro.
+fn simular_combo(
+    teclado: &mut uinput::Device,
+    modificadores: &[keyboard::Key],
+    nome: &str,
+) -> Result<(), ErroEntrega> {
     (|| -> uinput::Result<()> {
-        teclado.press(&keyboard::Key::LeftControl)?;
+        for tecla in modificadores {
+            teclado.press(tecla)?;
+        }
         teclado.click(&keyboard::Key::V)?;
-        teclado.release(&keyboard::Key::LeftControl)?;
+        for tecla in modificadores.iter().rev() {
+            teclado.release(tecla)?;
+        }
         teclado.synchronize()
     })()
-    .map_err(|erro| ErroEntrega(format!("falha ao simular Ctrl+V: {erro}")))?;
+    .map_err(|erro| ErroEntrega(format!("falha ao simular {nome}: {erro}")))?;
 
     std::thread::sleep(PAUSA_APOS_COLAR);
     Ok(())

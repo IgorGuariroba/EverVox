@@ -1,0 +1,114 @@
+//! Porta de Foco (ADR 0001): consulta a extensão GNOME Shell via D-Bus para
+//! saber o app focado e decide o [`Atalho`] de colar comparando contra a
+//! lista de terminais conhecidos da config. Extensão ausente, incompatível,
+//! ou qualquer falha na consulta degradam para [`Atalho::Padrao`] sem erro —
+//! o pior caso é o mesmo `Ctrl+V` de antes desta extensão existir.
+
+use evervox_core::{Atalho, Foco};
+use zbus::blocking::Connection;
+
+/// Endereço D-Bus exposto pela extensão GNOME Shell do EverVox. A extensão
+/// não possui (nem precisa de) um nome de barramento próprio: ela exporta o
+/// objeto na conexão de sessão que o próprio GNOME Shell já é dono de
+/// `org.gnome.Shell`, então a consulta é dirigida a esse nome.
+mod contrato_extensao {
+    pub const SERVICE_NAME: &str = "org.gnome.Shell";
+    pub const OBJECT_PATH: &str = "/com/evervox/Extensao";
+    pub const INTERFACE_NAME: &str = "com.evervox.Extensao1";
+    pub const METODO_APP_FOCADO: &str = "AppFocado";
+}
+
+pub struct FocoGnome {
+    connection: Option<Connection>,
+    terminais_conhecidos: Vec<String>,
+}
+
+impl FocoGnome {
+    /// Abre a conexão D-Bus de sessão. Se não for possível abri-la, todas as
+    /// consultas degradam para [`Atalho::Padrao`] (ver [`Foco::atalho_de_colar`]).
+    pub fn nova(terminais_conhecidos: Vec<String>) -> Self {
+        Self {
+            connection: Connection::session().ok(),
+            terminais_conhecidos,
+        }
+    }
+
+    fn consultar_app_focado(&self) -> Option<String> {
+        let connection = self.connection.as_ref()?;
+        let reply = connection
+            .call_method(
+                Some(contrato_extensao::SERVICE_NAME),
+                contrato_extensao::OBJECT_PATH,
+                Some(contrato_extensao::INTERFACE_NAME),
+                contrato_extensao::METODO_APP_FOCADO,
+                &(),
+            )
+            .ok()?;
+        reply.body().deserialize::<String>().ok()
+    }
+}
+
+impl Foco for FocoGnome {
+    fn atalho_de_colar(&mut self) -> Atalho {
+        let app_focado = self.consultar_app_focado();
+        decidir_atalho(app_focado.as_deref(), &self.terminais_conhecidos)
+    }
+}
+
+/// Decide o [`Atalho`] a partir do identificador do app focado (WM_CLASS,
+/// como devolvido pela extensão GNOME) e da lista de terminais conhecidos da
+/// config. `None` (extensão indisponível ou consulta falhou) degrada para
+/// [`Atalho::Padrao`], igual a um app que não está na lista. A comparação
+/// ignora maiúsculas/minúsculas: GNOME Shell não é consistente entre
+/// versões sobre a capitalização do WM_CLASS.
+fn decidir_atalho(app_focado: Option<&str>, terminais_conhecidos: &[String]) -> Atalho {
+    let Some(app) = app_focado else {
+        return Atalho::Padrao;
+    };
+    let e_terminal = terminais_conhecidos
+        .iter()
+        .any(|terminal| terminal.eq_ignore_ascii_case(app));
+    if e_terminal {
+        Atalho::Terminal
+    } else {
+        Atalho::Padrao
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn terminais() -> Vec<String> {
+        vec!["gnome-terminal-server".to_string(), "kitty".to_string()]
+    }
+
+    #[test]
+    fn app_na_lista_de_terminais_decide_atalho_de_terminal() {
+        assert_eq!(
+            decidir_atalho(Some("gnome-terminal-server"), &terminais()),
+            Atalho::Terminal
+        );
+    }
+
+    #[test]
+    fn comparacao_ignora_maiusculas_e_minusculas() {
+        assert_eq!(
+            decidir_atalho(Some("Gnome-Terminal-Server"), &terminais()),
+            Atalho::Terminal
+        );
+    }
+
+    #[test]
+    fn app_fora_da_lista_decide_atalho_padrao() {
+        assert_eq!(
+            decidir_atalho(Some("firefox"), &terminais()),
+            Atalho::Padrao
+        );
+    }
+
+    #[test]
+    fn app_focado_indisponivel_degrada_para_atalho_padrao() {
+        assert_eq!(decidir_atalho(None, &terminais()), Atalho::Padrao);
+    }
+}

@@ -145,10 +145,32 @@ pub trait Entrega: Send {
     fn salvar_clipboard(&mut self) -> Result<Self::ClipboardSalvo, ErroEntrega>;
     /// Copia o texto da Transcrição para o clipboard.
     fn copiar(&mut self, texto: &str) -> Result<(), ErroEntrega>;
-    /// Simula o atalho de colar (Ctrl+V) no app focado.
-    fn colar(&mut self) -> Result<(), ErroEntrega>;
+    /// Simula o atalho de colar no app focado (ver [`Atalho`]).
+    fn colar(&mut self, atalho: Atalho) -> Result<(), ErroEntrega>;
     /// Restaura o clipboard salvo por [`salvar_clipboard`].
     fn restaurar_clipboard(&mut self, salvo: Self::ClipboardSalvo) -> Result<(), ErroEntrega>;
+}
+
+/// Atalho de colar a simular na Entrega, decidido a partir do app focado
+/// (ver [`Foco`]). Terminais não recebem `Ctrl+V` (costuma abrir um menu ou
+/// nada acontece); usam `Ctrl+Shift+V`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Atalho {
+    /// `Ctrl+V`, para qualquer app que não seja um terminal.
+    Padrao,
+    /// `Ctrl+Shift+V`, para terminais.
+    Terminal,
+}
+
+/// Porta de Foco (ver ADR 0001): decide o [`Atalho`] de colar a partir do app
+/// focado no momento da Entrega. A implementação real consulta a extensão
+/// GNOME Shell via D-Bus e compara contra a lista de terminais conhecidos da
+/// config; se a extensão estiver ausente ou a consulta falhar, degrada para
+/// [`Atalho::Padrao`] sem erro — o método nunca falha. Fica no Daemon;
+/// testes usam um fake fixo.
+pub trait Foco: Send {
+    /// Decide o [`Atalho`] de colar a usar agora, a partir do app focado.
+    fn atalho_de_colar(&mut self) -> Atalho;
 }
 
 /// Acumula as amostras produzidas por uma [`FonteDeAudio`] durante uma
@@ -204,29 +226,32 @@ impl ResultadoToggle {
     }
 }
 
-pub struct Machine<F: Feedback, G: FonteDeAudio, E: EngineSTT, D: Entrega> {
+pub struct Machine<F: Feedback, G: FonteDeAudio, E: EngineSTT, D: Entrega, O: Foco> {
     state: DitadoState,
     feedback: Arc<Mutex<F>>,
     gravador: Gravador<G>,
     engine: Arc<Mutex<E>>,
     entrega: Arc<Mutex<D>>,
+    foco: Arc<Mutex<O>>,
     processamentos: Vec<JoinHandle<()>>,
 }
 
-impl<F, G, E, D> Machine<F, G, E, D>
+impl<F, G, E, D, O> Machine<F, G, E, D, O>
 where
     F: Feedback + 'static,
     G: FonteDeAudio,
     E: EngineSTT + 'static,
     D: Entrega + 'static,
+    O: Foco + 'static,
 {
-    pub fn new(feedback: F, fonte_de_audio: G, engine: E, entrega: D) -> Self {
+    pub fn new(feedback: F, fonte_de_audio: G, engine: E, entrega: D, foco: O) -> Self {
         Self {
             state: DitadoState::Ocioso,
             feedback: Arc::new(Mutex::new(feedback)),
             gravador: Gravador::new(fonte_de_audio),
             engine: Arc::new(Mutex::new(engine)),
             entrega: Arc::new(Mutex::new(entrega)),
+            foco: Arc::new(Mutex::new(foco)),
             processamentos: Vec::new(),
         }
     }
@@ -271,6 +296,7 @@ where
     fn despachar_processamento(&mut self, audio: AudioGravado) {
         let engine = Arc::clone(&self.engine);
         let entrega = Arc::clone(&self.entrega);
+        let foco = Arc::clone(&self.foco);
         let feedback = Arc::clone(&self.feedback);
 
         let handle = thread::spawn(move || {
@@ -281,8 +307,9 @@ where
                 }
                 Ok(texto) => {
                     let texto = texto.trim();
+                    let atalho = foco.lock().unwrap().atalho_de_colar();
                     let resultado =
-                        entregar_com_colar_simulado(&mut *entrega.lock().unwrap(), texto);
+                        entregar_com_colar_simulado(&mut *entrega.lock().unwrap(), texto, atalho);
                     let mut feedback = feedback.lock().unwrap();
                     match resultado {
                         Ok(None) => feedback.concluiu_ditado(texto),
@@ -321,10 +348,11 @@ enum FalhaEntrega {
 fn entregar_com_colar_simulado<D: Entrega>(
     entrega: &mut D,
     texto: &str,
+    atalho: Atalho,
 ) -> Result<Option<ErroEntrega>, FalhaEntrega> {
     let salvo = entrega.salvar_clipboard().map_err(FalhaEntrega::Outra)?;
     entrega.copiar(texto).map_err(FalhaEntrega::Outra)?;
-    entrega.colar().map_err(|_| FalhaEntrega::AoColar)?;
+    entrega.colar(atalho).map_err(|_| FalhaEntrega::AoColar)?;
     Ok(entrega.restaurar_clipboard(salvo).err())
 }
 
@@ -479,7 +507,7 @@ mod tests {
     enum EntregaEvento {
         Salvou,
         Copiou(String),
-        Colou,
+        Colou(Atalho),
         Restaurou(String),
     }
 
@@ -534,11 +562,14 @@ mod tests {
             Ok(())
         }
 
-        fn colar(&mut self) -> Result<(), ErroEntrega> {
+        fn colar(&mut self, atalho: Atalho) -> Result<(), ErroEntrega> {
             if self.falhar_em == Some(EtapaEntrega::Colar) {
                 return Err(ErroEntrega("falhou ao simular o colar".to_string()));
             }
-            self.eventos.lock().unwrap().push(EntregaEvento::Colou);
+            self.eventos
+                .lock()
+                .unwrap()
+                .push(EntregaEvento::Colou(atalho));
             Ok(())
         }
 
@@ -556,18 +587,68 @@ mod tests {
         }
     }
 
+    /// Foco fake: devolve sempre o mesmo [`Atalho`], simulando um app
+    /// terminal, não-terminal, ou a extensão GNOME indisponível (que também
+    /// degrada para [`Atalho::Padrao`], como a implementação real).
+    #[derive(Clone)]
+    struct FakeFoco {
+        atalho: Atalho,
+    }
+
+    impl FakeFoco {
+        fn terminal() -> Self {
+            Self {
+                atalho: Atalho::Terminal,
+            }
+        }
+
+        fn nao_terminal() -> Self {
+            Self {
+                atalho: Atalho::Padrao,
+            }
+        }
+
+        fn indisponivel() -> Self {
+            Self {
+                atalho: Atalho::Padrao,
+            }
+        }
+    }
+
+    impl Default for FakeFoco {
+        fn default() -> Self {
+            Self::nao_terminal()
+        }
+    }
+
+    impl Foco for FakeFoco {
+        fn atalho_de_colar(&mut self) -> Atalho {
+            self.atalho
+        }
+    }
+
     fn nova_machine(
         fonte: FakeFonteDeAudio,
         engine: FakeEngine,
         entrega: FakeEntrega,
         feedback: FakeFeedback,
-    ) -> Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, FakeEntrega> {
-        Machine::new(feedback, fonte, engine, entrega)
+    ) -> Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, FakeEntrega, FakeFoco> {
+        nova_machine_com_foco(fonte, engine, entrega, feedback, FakeFoco::default())
+    }
+
+    fn nova_machine_com_foco(
+        fonte: FakeFonteDeAudio,
+        engine: FakeEngine,
+        entrega: FakeEntrega,
+        feedback: FakeFeedback,
+        foco: FakeFoco,
+    ) -> Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, FakeEntrega, FakeFoco> {
+        Machine::new(feedback, fonte, engine, entrega, foco)
     }
 
     fn nova_machine_padrao(
         fonte: FakeFonteDeAudio,
-    ) -> Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, FakeEntrega> {
+    ) -> Machine<FakeFeedback, FakeFonteDeAudio, FakeEngine, FakeEntrega, FakeFoco> {
         nova_machine(
             fonte,
             FakeEngine::sucesso(""),
@@ -694,7 +775,7 @@ mod tests {
             vec![
                 EntregaEvento::Salvou,
                 EntregaEvento::Copiou("oi mundo".to_string()),
-                EntregaEvento::Colou,
+                EntregaEvento::Colou(Atalho::Padrao),
                 EntregaEvento::Restaurou("conteúdo antigo".to_string()),
             ]
         );
@@ -706,6 +787,66 @@ mod tests {
                 Event::Concluiu("oi mundo".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn foco_terminal_cola_com_atalho_de_terminal() {
+        let entrega = FakeEntrega::default();
+        let mut machine = nova_machine_com_foco(
+            FakeFonteDeAudio::default(),
+            FakeEngine::sucesso("oi mundo"),
+            entrega.clone(),
+            FakeFeedback::default(),
+            FakeFoco::terminal(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Colou(Atalho::Terminal)));
+    }
+
+    #[test]
+    fn foco_nao_terminal_cola_com_atalho_padrao() {
+        let entrega = FakeEntrega::default();
+        let mut machine = nova_machine_com_foco(
+            FakeFonteDeAudio::default(),
+            FakeEngine::sucesso("oi mundo"),
+            entrega.clone(),
+            FakeFeedback::default(),
+            FakeFoco::nao_terminal(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Colou(Atalho::Padrao)));
+    }
+
+    #[test]
+    fn foco_indisponivel_degrada_para_atalho_padrao() {
+        let entrega = FakeEntrega::default();
+        let mut machine = nova_machine_com_foco(
+            FakeFonteDeAudio::default(),
+            FakeEngine::sucesso("oi mundo"),
+            entrega.clone(),
+            FakeFeedback::default(),
+            FakeFoco::indisponivel(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Colou(Atalho::Padrao)));
     }
 
     #[test]
@@ -865,7 +1006,7 @@ mod tests {
             vec![
                 EntregaEvento::Salvou,
                 EntregaEvento::Copiou("oi mundo".to_string()),
-                EntregaEvento::Colou,
+                EntregaEvento::Colou(Atalho::Padrao),
             ]
         );
         assert_eq!(
@@ -899,6 +1040,7 @@ mod tests {
             FakeFonteDeAudio::default(),
             engine,
             entrega.clone(),
+            FakeFoco::default(),
         );
 
         machine.toggle().unwrap(); // Ocioso -> Gravando
@@ -921,7 +1063,7 @@ mod tests {
             vec![
                 EntregaEvento::Salvou,
                 EntregaEvento::Copiou("primeiro ditado".to_string()),
-                EntregaEvento::Colou,
+                EntregaEvento::Colou(Atalho::Padrao),
                 EntregaEvento::Restaurou(String::new()),
             ]
         );

@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 evervox-core = { path = "../core" }
-zbus = { workspace = true }
+zbus = { workspace = true, features = ["blocking-api"] }
 tokio = { workspace = true }
 notify-rust = { workspace = true }
 anyhow = { workspace = true }
