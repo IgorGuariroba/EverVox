@@ -1,0 +1,24 @@
+#!/bin/sh
+# Pós-instalação do pacote evervox: recarrega as regras udev (para o
+# /dev/uinput já existente ganhar o grupo/modo certos) e habilita o serviço
+# de usuário para todas as sessões futuras. Os passos que dependem do
+# usuário logado (grupo input, extensão, atalho) ficam no
+# `evervox-pos-instalar`.
+set -e
+
+case "$1" in
+    configure)
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules || true
+            udevadm trigger --subsystem-match=misc || true
+        fi
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --global enable evervox.service || true
+        fi
+        echo "EverVox instalado. Cada usuário deve rodar 'evervox-pos-instalar'"
+        echo "na sessão gráfica para concluir a configuração (grupo input,"
+        echo "extensão GNOME, serviço e atalho de teclado)."
+        ;;
+esac
+
+exit 0

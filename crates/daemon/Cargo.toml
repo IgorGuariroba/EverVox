@@ -2,6 +2,9 @@
 name = "evervox-daemon"
 version = "0.1.0"
 edition = "2021"
+description = "Serviço de ditado por voz para Ubuntu (GNOME/Wayland)"
+license = "MIT"
+repository = "https://github.com/IgorGuariroba/EverVox"
 
 [[bin]]
 name = "evervox-daemon"
@@ -21,3 +24,35 @@ toml = { workspace = true }
 reqwest = { workspace = true }
 whisper-rs = { workspace = true }
 uinput = { workspace = true }
+
+# Empacotamento .deb (cargo-deb): o pacote "evervox" carrega os dois
+# binários do workspace, a extensão GNOME, a unit systemd --user e a regra
+# udev do uinput. Gere com scripts/empacotar-deb.sh (builda o workspace
+# antes, porque o binário `evervox` vem do crate cli).
+[package.metadata.deb]
+name = "evervox"
+maintainer = "Igor R. Guariroba <1g0r.guari@gmail.com>"
+copyright = "2026, Igor R. Guariroba"
+extended-description = """\
+Ditado por voz para Ubuntu com GNOME Shell em Wayland: um atalho de teclado
+captura a fala em qualquer app, transcreve (whisper.cpp local ou OpenAI),
+limpa o texto via LLM (opcional) e entrega ao campo de texto focado.
+Depois de instalar, cada usuário roda 'evervox-pos-instalar' na sessão
+gráfica para concluir a configuração."""
+section = "sound"
+priority = "optional"
+depends = "$auto"
+recommends = "gnome-shell (>= 45)"
+maintainer-scripts = "../../packaging/debian"
+assets = [
+    ["target/release/evervox-daemon", "usr/bin/", "755"],
+    ["target/release/evervox", "usr/bin/", "755"],
+    ["../../packaging/pos-instalar.sh", "usr/bin/evervox-pos-instalar", "755"],
+    ["../../packaging/evervox.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/99-evervox-uinput.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../gnome-extension/extension.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
+    ["../../gnome-extension/prefs.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
+    ["../../gnome-extension/metadata.json", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
+    ["../../gnome-extension/stylesheet.css", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
+    ["../../README.md", "usr/share/doc/evervox/", "644"],
+]
