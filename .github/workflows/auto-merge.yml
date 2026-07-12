@@ -4,6 +4,12 @@ name: Auto-merge
 # ou atualizado: o GitHub mescla sozinho quando o check obrigatório `ci`
 # (ver ci.yml e o ruleset "protect-main") ficar verde — sem isso, mesmo com
 # checks verdes o PR fica parado até alguém clicar em "Merge" manualmente.
+#
+# Usa o PAT AUTO_MERGE_PAT (fine-grained, Contents + Pull requests em
+# read/write) em vez do GITHUB_TOKEN de propósito: merge armado com o
+# GITHUB_TOKEN sai atribuído ao github-actions[bot], e o push resultante
+# na main não dispara workflow nenhum (anti-recursão do Actions) — nem o
+# ci de push, nem o Release que publica o .deb (ver release.yml).
 on:
   pull_request:
     branches: [main]
@@ -20,7 +26,7 @@ jobs:
     steps:
       - name: Habilitar auto-merge (squash)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         # Idempotente: se já estava ligado (ex.: evento "synchronize" após
         # um push extra), o comando só devolve um aviso — não falha o job.
