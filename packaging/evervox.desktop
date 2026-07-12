@@ -1,0 +1,14 @@
+# Lançador do EverVox no "Mostrar aplicativos" do GNOME. O EverVox é um
+# serviço de fundo (Daemon + extensão GNOME + atalho de teclado), então
+# "abrir" o app significa abrir as Preferências — a UI de configuração
+# hospedada nas prefs da extensão (ver CONTEXT.md).
+[Desktop Entry]
+Type=Application
+Name=EverVox
+Comment=Ditado por voz para GNOME/Wayland
+Comment[en]=Voice dictation for GNOME/Wayland
+Exec=gnome-extensions prefs evervox@evervox.local
+Icon=evervox
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=ditado;voz;voice;dictation;whisper;transcrição;transcricao;fala;speech;

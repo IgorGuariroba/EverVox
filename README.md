@@ -31,7 +31,8 @@ evervox-pos-instalar
 
 O pacote instala os binários em `/usr/bin`, a extensão GNOME em
 `/usr/share/gnome-shell/extensions`, o serviço `systemd --user` em
-`/usr/lib/systemd/user` e a regra udev de `/dev/uinput` — e o
+`/usr/lib/systemd/user`, a regra udev de `/dev/uinput` e um lançador
+("EverVox" em Mostrar aplicativos, que abre as Preferências) — e o
 `evervox-pos-instalar` conclui os passos que dependem do seu usuário
 (grupo `input`, habilitar extensão e serviço, atalho de teclado; aceita a
 variável `EVERVOX_ATALHO` como no instalador de fonte). Se ele avisar que é
