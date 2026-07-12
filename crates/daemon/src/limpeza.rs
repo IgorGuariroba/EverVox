@@ -624,4 +624,67 @@ mod tests {
 
         assert_eq!(texto, "Hi, world.");
     }
+
+    #[test]
+    fn traducao_pura_com_falha_da_api_vira_erro_claro() {
+        let url = servidor_mock(resposta_http(
+            "401 Unauthorized",
+            r#"{"error":"invalid_api_key"}"#,
+        ));
+        let mut limpeza = LimpezaOpenAI::com_url(
+            url,
+            "chave-secreta".to_string(),
+            "gpt-4o-mini",
+            &Instrucao::Traduzir {
+                idioma_saida: "en".to_string(),
+            },
+            Duration::from_secs(5),
+        );
+
+        let erro = limpeza.limpar("oi mundo").unwrap_err();
+
+        assert!(erro.0.contains("401"));
+        assert!(!erro.0.contains("chave-secreta"));
+    }
+
+    #[test]
+    fn traducao_pura_com_timeout_vira_erro_claro() {
+        let url = servidor_mock_sem_resposta();
+        let mut limpeza = LimpezaOpenAI::com_url(
+            url,
+            "chave-de-teste".to_string(),
+            "gpt-4o-mini",
+            &Instrucao::Traduzir {
+                idioma_saida: "en".to_string(),
+            },
+            Duration::from_millis(50),
+        );
+
+        let erro = limpeza.limpar("oi mundo").unwrap_err();
+
+        assert!(erro.0.contains("falha de rede"));
+    }
+
+    #[test]
+    fn limpeza_e_traducao_fundidas_com_falha_da_api_vira_erro_claro() {
+        let url = servidor_mock(resposta_http(
+            "401 Unauthorized",
+            r#"{"error":"invalid_api_key"}"#,
+        ));
+        let mut limpeza = LimpezaAnthropic::com_url(
+            url,
+            "chave-secreta".to_string(),
+            "claude-3-5-haiku-latest",
+            &Instrucao::LimparETraduzir {
+                contexto: contexto_padrao(),
+                idioma_saida: "en".to_string(),
+            },
+            Duration::from_secs(5),
+        );
+
+        let erro = limpeza.limpar("éé oi mundo").unwrap_err();
+
+        assert!(erro.0.contains("401"));
+        assert!(!erro.0.contains("chave-secreta"));
+    }
 }

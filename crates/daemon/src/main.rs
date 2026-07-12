@@ -343,21 +343,26 @@ fn contexto_limpeza(config: &config::Config) -> limpeza::ContextoLimpeza {
     }
 }
 
-/// Decide o que a chamada de LLM desta invocação deve fazer a partir da
-/// combinação Limpeza/Tradução ligadas na config — nunca chamada com as duas
-/// desligadas (ver [`preparar_limpeza`], que usa [`limpeza::LimpezaDesativada`]
-/// nesse caso sem exigir chave de API).
-fn instrucao_llm(config: &config::Config, limpar: bool, traduzir: bool) -> limpeza::Instrucao {
+/// Decide o que a chamada de LLM deve fazer a partir da combinação
+/// Limpeza/Tradução ligadas na config: `None` quando as duas estão
+/// desligadas — [`preparar_limpeza`] usa isso para escolher
+/// [`limpeza::LimpezaDesativada`] sem exigir chave de API, em vez de um
+/// estado inválido a evitar por convenção.
+fn instrucao_llm(
+    config: &config::Config,
+    limpar: bool,
+    traduzir: bool,
+) -> Option<limpeza::Instrucao> {
     match (limpar, traduzir) {
-        (true, false) => limpeza::Instrucao::Limpar(contexto_limpeza(config)),
-        (false, true) => limpeza::Instrucao::Traduzir {
+        (true, false) => Some(limpeza::Instrucao::Limpar(contexto_limpeza(config))),
+        (false, true) => Some(limpeza::Instrucao::Traduzir {
             idioma_saida: config.idioma_saida.clone(),
-        },
-        (true, true) => limpeza::Instrucao::LimparETraduzir {
+        }),
+        (true, true) => Some(limpeza::Instrucao::LimparETraduzir {
             contexto: contexto_limpeza(config),
             idioma_saida: config.idioma_saida.clone(),
-        },
-        (false, false) => unreachable!("preparar_limpeza já devolveu LimpezaDesativada"),
+        }),
+        (false, false) => None,
     }
 }
 
@@ -376,11 +381,9 @@ fn preparar_limpeza(
     let limpar = config.limpeza.habilitada;
     let traduzir = traducao_ligada(config);
 
-    if !limpar && !traduzir {
+    let Some(instrucao) = instrucao_llm(config, limpar, traduzir) else {
         return Ok(Box::new(limpeza::LimpezaDesativada));
-    }
-
-    let instrucao = instrucao_llm(config, limpar, traduzir);
+    };
 
     match config.limpeza.provedor {
         ProvedorLimpezaEscolhido::Openai => {
@@ -581,9 +584,9 @@ mod tests {
 
         assert_eq!(
             instrucao,
-            limpeza::Instrucao::Traduzir {
+            Some(limpeza::Instrucao::Traduzir {
                 idioma_saida: "en".to_string()
-            }
+            })
         );
     }
 
@@ -595,7 +598,7 @@ mod tests {
 
         assert_eq!(
             instrucao,
-            limpeza::Instrucao::Limpar(contexto_limpeza(&config))
+            Some(limpeza::Instrucao::Limpar(contexto_limpeza(&config)))
         );
     }
 
@@ -607,10 +610,17 @@ mod tests {
 
         assert_eq!(
             instrucao,
-            limpeza::Instrucao::LimparETraduzir {
+            Some(limpeza::Instrucao::LimparETraduzir {
                 contexto: contexto_limpeza(&config),
                 idioma_saida: "en".to_string(),
-            }
+            })
         );
+    }
+
+    #[test]
+    fn instrucao_nenhuma_quando_limpeza_e_traducao_estao_desligadas() {
+        let config = config_com_idiomas("pt", "pt");
+
+        assert_eq!(instrucao_llm(&config, false, false), None);
     }
 }
