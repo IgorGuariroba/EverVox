@@ -66,5 +66,8 @@ gpg --batch --yes --armor --detach-sign --output Release.gpg Release
 echo "==> Exportando a chave pública (evervox.gpg)..."
 gpg --export >evervox.gpg
 
+# Já estamos dentro de $DIR_REPO desde o cd acima — com um caminho relativo
+# (ex.: ghpages/apt no CI), repeti-lo aqui apontaria para um diretório
+# inexistente e derrubaria o script depois de todo o trabalho feito.
 echo "==> Repositório pronto em $DIR_REPO:"
-ls -1 "$DIR_REPO"
+ls -1
