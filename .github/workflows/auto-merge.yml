@@ -28,6 +28,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        # Idempotente: se já estava ligado (ex.: evento "synchronize" após
-        # um push extra), o comando só devolve um aviso — não falha o job.
-        run: gh pr merge --auto --squash "$PR_URL" || true
+        # Idempotente nos casos benignos — já armado (ex.: evento
+        # "synchronize" após um push extra) ou PR já mesclável (o GitHub
+        # rejeita armar auto-merge nesse estado; aí mescla direto). Erros
+        # reais (ex.: PAT inválido, 401) DERRUBAM o job: um `|| true` aqui
+        # já escondeu um token quebrado com o job verde e PRs parados.
+        run: |
+          if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = "true" ]; then
+            echo "Auto-merge já armado — nada a fazer."
+            exit 0
+          fi
+          if gh pr merge --auto --squash "$PR_URL"; then
+            exit 0
+          fi
+          if [ "$(gh pr view "$PR_URL" --json mergeStateStatus --jq .mergeStateStatus)" = "CLEAN" ]; then
+            echo "PR já mesclável (checks verdes): mesclando direto."
+            exec gh pr merge --squash "$PR_URL"
+          fi
+          echo "erro: não foi possível armar o auto-merge — verifique o token AUTO_MERGE_PAT." >&2
+          exit 1
