@@ -72,6 +72,7 @@ instalar_lancador() {
     mkdir -p "$apps_dir" "$icones_dir"
     cp "$DIR_REPO/packaging/evervox.desktop" "$apps_dir/evervox.desktop"
     cp "$DIR_REPO/packaging/evervox.svg" "$icones_dir/evervox.svg"
+    install -m 755 "$DIR_REPO/packaging/preferencias.sh" "$BIN_DIR/evervox-preferencias"
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$apps_dir" 2>/dev/null || true
     fi
