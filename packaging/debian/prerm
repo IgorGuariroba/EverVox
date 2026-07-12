@@ -1,0 +1,14 @@
+#!/bin/sh
+# Pré-remoção do pacote evervox: desfaz o enable global do serviço de
+# usuário enquanto a unit ainda existe no disco.
+set -e
+
+case "$1" in
+    remove)
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --global disable evervox.service || true
+        fi
+        ;;
+esac
+
+exit 0

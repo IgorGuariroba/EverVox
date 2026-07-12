@@ -1,0 +1,11 @@
+[Unit]
+Description=EverVox - Daemon de ditado por voz
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/evervox-daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

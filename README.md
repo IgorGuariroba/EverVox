@@ -12,11 +12,35 @@ mexer no código.
 
 - Ubuntu com GNOME Shell em Wayland (alvo da v1; outros compositores/DEs não
   são suportados).
-- [Toolchain Rust](https://rustup.rs) (`cargo` no PATH) — o instalador builda
-  os binários a partir do código-fonte.
 - `sudo` disponível (para a regra udev de `/dev/uinput`).
+- Só para instalar a partir do código-fonte: [toolchain
+  Rust](https://rustup.rs) (`cargo` no PATH).
 
-## Instalação
+## Instalação pelo pacote .deb
+
+Baixe (ou gere, ver abaixo) o `evervox_*.deb` e instale:
+
+```bash
+sudo apt install ./evervox_0.1.0-1_amd64.deb
+evervox-pos-instalar
+```
+
+O pacote instala os binários em `/usr/bin`, a extensão GNOME em
+`/usr/share/gnome-shell/extensions`, o serviço `systemd --user` em
+`/usr/lib/systemd/user` e a regra udev de `/dev/uinput` — e o
+`evervox-pos-instalar` conclui os passos que dependem do seu usuário
+(grupo `input`, habilitar extensão e serviço, atalho de teclado; aceita a
+variável `EVERVOX_ATALHO` como no instalador de fonte). Se ele avisar que é
+preciso **relogar a sessão**, faça isso antes de ditar.
+
+Para gerar o pacote a partir do código-fonte (requer o toolchain Rust e
+`cargo install cargo-deb`):
+
+```bash
+./scripts/empacotar-deb.sh
+```
+
+## Instalação a partir do código-fonte
 
 ```bash
 git clone https://github.com/IgorGuariroba/EverVox.git
@@ -74,6 +98,16 @@ evervox status
   Vocabulário, terminais conhecidos) estão documentados em `CONTEXT.md`.
 
 ## Desinstalação
+
+Instalação via `.deb`:
+
+```bash
+systemctl --user disable --now evervox.service
+sudo apt remove evervox
+# Opcional — config, dados e chaves: veja os passos "Opcional" abaixo.
+```
+
+Instalação a partir do código-fonte:
 
 ```bash
 systemctl --user disable --now evervox.service
