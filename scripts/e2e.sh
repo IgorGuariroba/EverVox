@@ -130,11 +130,33 @@ mic_virtual_visivel() {
     pactl list sinks short 2>/dev/null | grep -q evervox_mic
 }
 
+# Mudar o source default passa pelos metadados do session manager: enquanto o
+# WirePlumber não terminou de subir, o pipewire-pulse responde "Failure: Not
+# supported" — flake observado no CI (runs 29180242376 e 29180427585). Tentar
+# e conferir que o default realmente mudou torna o comando reintentável.
+source_default_definido() {
+    pactl set-default-source evervox_mic.monitor 2>/dev/null &&
+        [ "$(pactl get-default-source 2>/dev/null)" = "evervox_mic.monitor" ]
+}
+
 criar_mic_virtual() {
     log "Criando microfone virtual (null sink → monitor source)..."
-    pactl load-module module-null-sink \
-        sink_name=evervox_mic \
-        sink_properties=device.description=EverVox_E2E_Mic >/dev/null
+    # Logo após subir, o pipewire-pulse já responde ao `pactl info` mas pode
+    # recusar load-module com "Failure: Not supported" enquanto o WirePlumber
+    # não terminou de ativar o core — flake observado no CI. Reintentar com
+    # pausa cobre essa janela.
+    local tentativa
+    for tentativa in 1 2 3 4 5; do
+        if pactl load-module module-null-sink \
+            sink_name=evervox_mic \
+            sink_properties=device.description=EverVox_E2E_Mic >/dev/null 2>&1; then
+            break
+        fi
+        [ "$tentativa" -lt 5 ] ||
+            falha "load-module module-null-sink recusado após 5 tentativas"
+        aviso "load-module recusado (tentativa $tentativa/5), aguardando 2s..."
+        sleep 2
+    done
     esperar_condicao 5 mic_virtual_visivel ||
         falha "sink 'evervox_mic' não apareceu em 'pactl list sinks short'"
 
@@ -142,7 +164,8 @@ criar_mic_virtual() {
     # ele como default, o Daemon o captura como se fosse o microfone real.
     esperar_condicao 5 bash -c "pactl list sources short 2>/dev/null | grep -q 'evervox_mic.monitor'" ||
         falha "monitor source 'evervox_mic.monitor' não apareceu"
-    pactl set-default-source evervox_mic.monitor
+    esperar_condicao 15 source_default_definido ||
+        falha "não foi possível definir evervox_mic.monitor como source default (WirePlumber não subiu?)"
     log "Microfone virtual pronto (source default: evervox_mic.monitor)"
 }
 
