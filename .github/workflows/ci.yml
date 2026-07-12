@@ -69,8 +69,11 @@ jobs:
       - name: Instalar dependências de sistema (PipeWire, Weston, STT, áudio)
         run: |
           sudo apt-get update
+          # pipewire-alsa é essencial: roteia o device ALSA "default" (que o
+          # cpal do Daemon abre) para o PipeWire — sem ele o microfone
+          # virtual nunca é visto e o Toggle falha com "microfone indisponível".
           sudo apt-get install -y \
-            pipewire wireplumber pipewire-pulse pulseaudio-utils \
+            pipewire pipewire-alsa wireplumber pipewire-pulse pulseaudio-utils \
             weston wl-clipboard \
             dbus-daemon \
             libespeak-ng1 python3 \

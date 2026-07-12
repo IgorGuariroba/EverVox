@@ -34,6 +34,14 @@ log()   { echo "==> $*"; }
 aviso() { echo "AVISO: $*" >&2; }
 falha() { echo "FALHA: $*" >&2; exit 1; }
 
+# Como `falha`, mas mostrando antes o fim do daemon.log — é lá que está o
+# motivo real de um Toggle recusado (ex.: "microfone indisponível").
+falha_com_log_do_daemon() {
+    echo "--- daemon.log (últimas 50 linhas) ---"
+    tail -50 "${DIR_TMP}/daemon.log" 2>/dev/null || true
+    falha "$@"
+}
+
 # ── limpeza ──────────────────────────────────────────────────────────────────
 # Todo processo em segundo plano entra em PIDS_LIMPEZA na ordem em que sobe;
 # o trap os derruba na ordem inversa (Daemon antes do PipeWire, PipeWire
@@ -263,7 +271,7 @@ executar_ditado() {
     local estado
     estado="$("$BIN_DIR/evervox" toggle 2>/dev/null)"
     [ "$estado" = "gravando" ] ||
-        falha "Toggle 1 deveria retornar 'gravando', retornou '$estado'"
+        falha_com_log_do_daemon "Toggle 1 deveria retornar 'gravando', retornou '$estado'"
 
     sleep 0.3 # margem para o microfone abrir o stream de captura
     log "Tocando o fixture no microfone virtual..."
@@ -277,7 +285,7 @@ executar_ditado() {
     log "Toggle 2 (encerrar e processar)..."
     estado="$("$BIN_DIR/evervox" toggle 2>/dev/null)"
     [ "$estado" = "ocioso" ] ||
-        falha "Toggle 2 deveria retornar 'ocioso', retornou '$estado'"
+        falha_com_log_do_daemon "Toggle 2 deveria retornar 'ocioso', retornou '$estado'"
 
     log "Aguardando o Processando terminar (timeout ${TIMEOUT_DITADO}s)..."
     if ! esperar_condicao "$TIMEOUT_DITADO" grep -q '"ocioso"' "${DIR_TMP}/estados.log"; then
