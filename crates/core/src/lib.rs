@@ -642,31 +642,39 @@ mod tests {
     }
 
     /// Limpeza fake que devolve um texto fixo (ou uma falha) de imediato, e
-    /// registra se foi chamada — usado para garantir que a Limpeza
-    /// desabilitada nunca dispara uma chamada de rede.
+    /// conta quantas vezes foi chamada — usado para garantir que a Limpeza
+    /// desabilitada nunca dispara uma chamada de rede, e que o núcleo nunca
+    /// chama a Limpeza mais de uma vez por Ditado (é essa garantia que
+    /// permite ao Daemon fundir Limpeza + Tradução numa única chamada de
+    /// LLM sem o núcleo saber disso, ver ADR 0003 e `crate::limpeza::Instrucao`
+    /// no Daemon).
     #[derive(Clone)]
     struct FakeLimpeza {
         resultado: Result<String, ErroLimpeza>,
-        chamada: Arc<Mutex<bool>>,
+        chamadas: Arc<Mutex<u32>>,
     }
 
     impl FakeLimpeza {
         fn sucesso(texto: &str) -> Self {
             Self {
                 resultado: Ok(texto.to_string()),
-                chamada: Arc::new(Mutex::new(false)),
+                chamadas: Arc::new(Mutex::new(0)),
             }
         }
 
         fn falha(mensagem: &str) -> Self {
             Self {
                 resultado: Err(ErroLimpeza(mensagem.to_string())),
-                chamada: Arc::new(Mutex::new(false)),
+                chamadas: Arc::new(Mutex::new(0)),
             }
         }
 
         fn foi_chamada(&self) -> bool {
-            *self.chamada.lock().unwrap()
+            self.contagem_de_chamadas() > 0
+        }
+
+        fn contagem_de_chamadas(&self) -> u32 {
+            *self.chamadas.lock().unwrap()
         }
     }
 
@@ -678,7 +686,7 @@ mod tests {
 
     impl Limpeza for FakeLimpeza {
         fn limpar(&mut self, _texto: &str) -> Result<String, ErroLimpeza> {
-            *self.chamada.lock().unwrap() = true;
+            *self.chamadas.lock().unwrap() += 1;
             self.resultado.clone()
         }
     }
@@ -1343,6 +1351,30 @@ mod tests {
                 Event::Concluiu("Oi, mundo.".to_string()),
             ]
         );
+    }
+
+    /// A [`Limpeza`] é chamada uma única vez por Ditado, nunca duas — é essa
+    /// garantia estrutural do núcleo que permite ao Daemon fundir Limpeza +
+    /// Tradução numa única chamada de LLM (ver ADR 0003) sem o núcleo saber
+    /// disso: o núcleo só enxerga um `Box<dyn Limpeza>` e o chama uma vez,
+    /// qualquer que seja a implementação concreta por trás.
+    #[test]
+    fn limpeza_e_chamada_uma_unica_vez_por_ditado() {
+        let entrega = FakeEntrega::default();
+        let limpeza = FakeLimpeza::sucesso("Oi, mundo.");
+        let mut machine = nova_machine_com_limpeza(
+            FakeEngine::sucesso("éé tipo oi mundo"),
+            limpeza.clone(),
+            config_limpeza_habilitada(),
+            entrega,
+            FakeFeedback::default(),
+        );
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert_eq!(limpeza.contagem_de_chamadas(), 1);
     }
 
     #[test]

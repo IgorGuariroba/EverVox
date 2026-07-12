@@ -167,10 +167,12 @@ type MachineDoDaemon = Machine<
 
 struct DaemonService {
     machine: Mutex<MachineDoDaemon>,
-    /// Resumo do Engine e da Limpeza resolvidos na inicialização (ver
-    /// `resumir_engine`/`resumir_limpeza`), devolvido por [`DaemonService::status`].
+    /// Resumo do Engine, da Limpeza e da Tradução resolvidos na
+    /// inicialização (ver `resumir_engine`/`resumir_limpeza`/
+    /// `resumir_traducao`), devolvido por [`DaemonService::status`].
     resumo_engine: String,
     resumo_limpeza: String,
+    resumo_traducao: String,
 }
 
 #[interface(name = "com.evervox.Daemon1")]
@@ -201,7 +203,10 @@ impl DaemonService {
     /// e nunca chega a servir D-Bus se isso não acontecer (ver
     /// `preparar_engine`/`preparar_limpeza`).
     async fn status(&self) -> String {
-        format!("{}\n{}", self.resumo_engine, self.resumo_limpeza)
+        format!(
+            "{}\n{}\n{}",
+            self.resumo_engine, self.resumo_limpeza, self.resumo_traducao
+        )
     }
 }
 
@@ -230,6 +235,19 @@ fn resumir_limpeza(config: &config::Config) -> String {
     format!(
         "limpeza: ligada (provedor '{provedor}', modelo '{}')",
         config.limpeza.modelo
+    )
+}
+
+/// Descreve a Tradução resolvida pela config para `evervox status` (ver
+/// [`DaemonService::status`]): ligada sempre que o Idioma de saída difere do
+/// Idioma de entrada (ver [`traducao_ligada`]).
+fn resumir_traducao(config: &config::Config) -> String {
+    if !traducao_ligada(config) {
+        return "tradução: desligada".to_string();
+    }
+    format!(
+        "tradução: ligada ({} -> {})",
+        config.idioma_entrada, config.idioma_saida
     )
 }
 
@@ -284,8 +302,11 @@ fn preparar_engine(config: &config::Config) -> anyhow::Result<Box<dyn EngineSTT>
         EngineEscolhido::Local => {
             let caminho_modelo = modelo::garantir(&config.modelo_local)?;
             eprintln!("evervox-daemon: carregando modelo whisper.cpp na memória...");
-            let engine =
-                EngineWhisper::carregar(&caminho_modelo, &config.idioma, &config.vocabulario)?;
+            let engine = EngineWhisper::carregar(
+                &caminho_modelo,
+                &config.idioma_entrada,
+                &config.vocabulario,
+            )?;
             eprintln!("evervox-daemon: modelo carregado, Engine local pronto.");
             Ok(Box::new(engine))
         }
@@ -300,30 +321,68 @@ fn preparar_engine(config: &config::Config) -> anyhow::Result<Box<dyn EngineSTT>
             eprintln!("evervox-daemon: Engine cloud (OpenAI) pronto.");
             Ok(Box::new(EngineCloud::nova(
                 chave,
-                &config.idioma,
+                &config.idioma_entrada,
                 &config.vocabulario,
             )))
         }
     }
 }
 
-/// Prepara a Limpeza escolhida pela config — desligada, OpenAI ou Anthropic
-/// — tudo bloqueante, feito uma única vez na inicialização do Daemon, como o
-/// Engine (ver [`preparar_engine`]). Com a Limpeza desligada, nenhuma chave
-/// de API é exigida: o núcleo nem chega a chamá-la (ver
-/// [`evervox_core::LimpezaExecucao`]).
+/// A Tradução está ligada quando o Idioma de saída difere do Idioma de
+/// entrada (ver `CONTEXT.md`): não há flag própria de liga/desliga, o par de
+/// idiomas já é a fonte da verdade.
+fn traducao_ligada(config: &config::Config) -> bool {
+    config.idioma_entrada != config.idioma_saida
+}
+
+fn contexto_limpeza(config: &config::Config) -> limpeza::ContextoLimpeza {
+    limpeza::ContextoLimpeza {
+        instrucoes: config.limpeza.instrucoes.clone(),
+        vocabulario: config.vocabulario.clone(),
+        pontuacao_falada: config.limpeza.pontuacao_falada,
+    }
+}
+
+/// Decide o que a chamada de LLM deve fazer a partir da combinação
+/// Limpeza/Tradução ligadas na config: `None` quando as duas estão
+/// desligadas — [`preparar_limpeza`] usa isso para escolher
+/// [`limpeza::LimpezaDesativada`] sem exigir chave de API, em vez de um
+/// estado inválido a evitar por convenção.
+fn instrucao_llm(
+    config: &config::Config,
+    limpar: bool,
+    traduzir: bool,
+) -> Option<limpeza::Instrucao> {
+    match (limpar, traduzir) {
+        (true, false) => Some(limpeza::Instrucao::Limpar(contexto_limpeza(config))),
+        (false, true) => Some(limpeza::Instrucao::Traduzir {
+            idioma_saida: config.idioma_saida.clone(),
+        }),
+        (true, true) => Some(limpeza::Instrucao::LimparETraduzir {
+            contexto: contexto_limpeza(config),
+            idioma_saida: config.idioma_saida.clone(),
+        }),
+        (false, false) => None,
+    }
+}
+
+/// Prepara a Limpeza e/ou a Tradução escolhidas pela config — desligadas,
+/// OpenAI ou Anthropic — tudo bloqueante, feito uma única vez na
+/// inicialização do Daemon, como o Engine (ver [`preparar_engine`]). Limpeza
+/// e Tradução são independentes (ver `CONTEXT.md`), mas quando ambas estão
+/// ligadas compartilham uma única chamada de LLM (ver ADR 0003 e
+/// [`limpeza::Instrucao`]), usando o provedor/modelo/timeout configurados
+/// para a Limpeza. Com as duas desligadas, nenhuma chave de API é exigida: o
+/// núcleo nem chega a chamar a Limpeza (ver [`evervox_core::LimpezaExecucao`]).
 fn preparar_limpeza(
     config: &config::Config,
     timeout: std::time::Duration,
 ) -> anyhow::Result<Box<dyn Limpeza>> {
-    if !config.limpeza.habilitada {
-        return Ok(Box::new(limpeza::LimpezaDesativada));
-    }
+    let limpar = config.limpeza.habilitada;
+    let traduzir = traducao_ligada(config);
 
-    let contexto = limpeza::ContextoLimpeza {
-        instrucoes: config.limpeza.instrucoes.clone(),
-        vocabulario: config.vocabulario.clone(),
-        pontuacao_falada: config.limpeza.pontuacao_falada,
+    let Some(instrucao) = instrucao_llm(config, limpar, traduzir) else {
+        return Ok(Box::new(limpeza::LimpezaDesativada));
     };
 
     match config.limpeza.provedor {
@@ -335,13 +394,13 @@ fn preparar_limpeza(
                 )
             })?;
             eprintln!(
-                "evervox-daemon: Limpeza via OpenAI ({}) pronta.",
+                "evervox-daemon: Limpeza/Tradução via OpenAI ({}) pronta.",
                 config.limpeza.modelo
             );
             Ok(Box::new(limpeza::LimpezaOpenAI::nova(
                 chave,
                 &config.limpeza.modelo,
-                &contexto,
+                &instrucao,
                 timeout,
             )))
         }
@@ -354,13 +413,13 @@ fn preparar_limpeza(
                     )
                 })?;
             eprintln!(
-                "evervox-daemon: Limpeza via Anthropic ({}) pronta.",
+                "evervox-daemon: Limpeza/Tradução via Anthropic ({}) pronta.",
                 config.limpeza.modelo
             );
             Ok(Box::new(limpeza::LimpezaAnthropic::nova(
                 chave,
                 &config.limpeza.modelo,
-                &contexto,
+                &instrucao,
                 timeout,
             )))
         }
@@ -378,8 +437,8 @@ async fn main() -> zbus::Result<()> {
         std::process::exit(1);
     });
     eprintln!(
-        "evervox-daemon: config carregada (idioma={}, modelo={}, engine={:?})",
-        config.idioma, config.modelo_local, config.engine
+        "evervox-daemon: config carregada (idioma_entrada={}, idioma_saida={}, modelo={}, engine={:?})",
+        config.idioma_entrada, config.idioma_saida, config.modelo_local, config.engine
     );
 
     let engine = preparar_engine(&config).unwrap_or_else(|erro| {
@@ -393,7 +452,7 @@ async fn main() -> zbus::Result<()> {
         std::process::exit(1);
     });
     let limpeza_config = LimpezaExecucao {
-        habilitada: config.limpeza.habilitada,
+        habilitada: config.limpeza.habilitada || traducao_ligada(&config),
         timeout: timeout_limpeza,
     };
 
@@ -420,6 +479,7 @@ async fn main() -> zbus::Result<()> {
     .expect("thread de inicialização do Foco/Feedback não deveria falhar");
     let resumo_engine = resumir_engine(&config);
     let resumo_limpeza = resumir_limpeza(&config);
+    let resumo_traducao = resumir_traducao(&config);
 
     let service = DaemonService {
         machine: Mutex::new(Machine::new(
@@ -433,6 +493,7 @@ async fn main() -> zbus::Result<()> {
         )),
         resumo_engine,
         resumo_limpeza,
+        resumo_traducao,
     };
 
     let connection = connection::Builder::session()?
@@ -479,5 +540,87 @@ mod tests {
             TAMANHO_MAXIMO_NA_NOTIFICACAO + 1 // +1 pelo caractere de elipse
         );
         assert!(resumo.ends_with('…'));
+    }
+
+    fn config_com_idiomas(entrada: &str, saida: &str) -> config::Config {
+        config::Config {
+            idioma_entrada: entrada.to_string(),
+            idioma_saida: saida.to_string(),
+            ..config::Config::default()
+        }
+    }
+
+    #[test]
+    fn traducao_desligada_quando_idiomas_sao_iguais() {
+        assert!(!traducao_ligada(&config_com_idiomas("pt", "pt")));
+    }
+
+    #[test]
+    fn traducao_ligada_quando_idiomas_diferem() {
+        assert!(traducao_ligada(&config_com_idiomas("pt", "en")));
+    }
+
+    #[test]
+    fn resumo_de_traducao_desligada() {
+        assert_eq!(
+            resumir_traducao(&config_com_idiomas("pt", "pt")),
+            "tradução: desligada"
+        );
+    }
+
+    #[test]
+    fn resumo_de_traducao_ligada_mostra_o_par_de_idiomas() {
+        assert_eq!(
+            resumir_traducao(&config_com_idiomas("pt", "en")),
+            "tradução: ligada (pt -> en)"
+        );
+    }
+
+    #[test]
+    fn instrucao_traduzir_quando_so_a_traducao_esta_ligada() {
+        let config = config_com_idiomas("pt", "en");
+
+        let instrucao = instrucao_llm(&config, false, true);
+
+        assert_eq!(
+            instrucao,
+            Some(limpeza::Instrucao::Traduzir {
+                idioma_saida: "en".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn instrucao_limpar_quando_so_a_limpeza_esta_ligada() {
+        let config = config_com_idiomas("pt", "pt");
+
+        let instrucao = instrucao_llm(&config, true, false);
+
+        assert_eq!(
+            instrucao,
+            Some(limpeza::Instrucao::Limpar(contexto_limpeza(&config)))
+        );
+    }
+
+    #[test]
+    fn instrucao_funde_limpeza_e_traducao_quando_ambas_ligadas() {
+        let config = config_com_idiomas("pt", "en");
+
+        let instrucao = instrucao_llm(&config, true, true);
+
+        assert_eq!(
+            instrucao,
+            Some(limpeza::Instrucao::LimparETraduzir {
+                contexto: contexto_limpeza(&config),
+                idioma_saida: "en".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn instrucao_nenhuma_quando_limpeza_e_traducao_estao_desligadas() {
+        let config = config_com_idiomas("pt", "pt");
+
+        assert_eq!(instrucao_llm(&config, false, false), None);
     }
 }
