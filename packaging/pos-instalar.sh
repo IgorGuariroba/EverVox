@@ -14,6 +14,7 @@ set -euo pipefail
 
 EXT_UUID="evervox@evervox.local"
 ATALHO="${EVERVOX_ATALHO:-<Control><Alt>d}"
+URL_REPO_APT="https://igorguariroba.github.io/EverVox/apt"
 PRECISA_RELOGAR=0
 
 log() { echo "==> $*"; }
@@ -79,10 +80,43 @@ registrar_atalho() {
     log "Atalho registrado: $ATALHO -> evervox toggle"
 }
 
+# Cadastra o repositório APT do projeto para as próximas versões chegarem
+# num 'sudo apt upgrade' comum, sem baixar .deb na mão. Sem rede (ou antes
+# de o repositório existir), só avisa — nada aqui é pré-requisito do ditado.
+configurar_repositorio_apt() {
+    local keyring="/usr/share/keyrings/evervox.gpg"
+    local lista="/etc/apt/sources.list.d/evervox.list"
+
+    if [ -f "$lista" ] && [ -f "$keyring" ]; then
+        log "Repositório APT do EverVox já configurado (updates via 'sudo apt upgrade')."
+        return
+    fi
+
+    log "Configurando o repositório APT do EverVox (pede sudo)..."
+    local chave_tmp
+    chave_tmp="$(mktemp)"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$URL_REPO_APT/evervox.gpg" -o "$chave_tmp" || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$chave_tmp" "$URL_REPO_APT/evervox.gpg" || true
+    fi
+    if ! [ -s "$chave_tmp" ]; then
+        rm -f "$chave_tmp"
+        aviso "não consegui baixar a chave do repositório APT ($URL_REPO_APT/evervox.gpg); atualizações automáticas ficam para a próxima vez que rodar o evervox-pos-instalar."
+        return
+    fi
+
+    sudo install -m 644 "$chave_tmp" "$keyring"
+    rm -f "$chave_tmp"
+    echo "deb [signed-by=$keyring] $URL_REPO_APT ./" | sudo tee "$lista" >/dev/null
+    log "Repositório APT configurado: as próximas versões chegam pelo 'sudo apt upgrade'."
+}
+
 entrar_no_grupo_input
 habilitar_extensao
 habilitar_servico
 registrar_atalho
+configurar_repositorio_apt
 
 echo
 log "Configuração do usuário concluída."

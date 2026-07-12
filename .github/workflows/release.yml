@@ -123,3 +123,29 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "EverVox ${{ steps.versao.outputs.tag }}" \
             --generate-notes
+
+      # Publica o .deb também no repositório APT plano servido pelo GitHub
+      # Pages (branch gh-pages, diretório apt/), para quem instalou pelo
+      # repositório receber a versão nova num 'apt upgrade' comum, sem
+      # baixar nada na mão (ver scripts/publicar-apt.sh e o
+      # 'configurar_repositorio_apt' do evervox-pos-instalar).
+      - name: Publicar no repositório APT (GitHub Pages)
+        if: steps.versao.outputs.publicar == 'true'
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+            echo "aviso: secret APT_GPG_PRIVATE_KEY ausente — release publicado só na página de releases, sem repositório APT." >&2
+            exit 0
+          fi
+          sudo apt-get install -y dpkg-dev apt-utils gnupg
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          git fetch origin gh-pages
+          git worktree add ghpages gh-pages
+          ./scripts/publicar-apt.sh ghpages/apt target/debian/*.deb
+          cd ghpages
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apt
+          git commit -m "apt: publica ${{ steps.versao.outputs.tag }}"
+          git push origin gh-pages

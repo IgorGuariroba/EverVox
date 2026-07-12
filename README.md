@@ -45,6 +45,27 @@ Para gerar o pacote a partir do código-fonte (requer o toolchain Rust e
 ./scripts/empacotar-deb.sh
 ```
 
+### Atualizações automáticas (repositório APT)
+
+O `evervox-pos-instalar` também cadastra o repositório APT do projeto
+(servido pelo GitHub Pages e alimentado pelo mesmo workflow de release, ver
+`scripts/publicar-apt.sh`); a partir daí as versões novas chegam junto com
+as atualizações normais do sistema:
+
+```bash
+sudo apt update && sudo apt upgrade
+```
+
+Para cadastrar o repositório manualmente (sem o `evervox-pos-instalar`):
+
+```bash
+curl -fsSL https://igorguariroba.github.io/EverVox/apt/evervox.gpg \
+  | sudo tee /usr/share/keyrings/evervox.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/evervox.gpg] https://igorguariroba.github.io/EverVox/apt ./" \
+  | sudo tee /etc/apt/sources.list.d/evervox.list
+sudo apt update
+```
+
 ## Instalação a partir do código-fonte
 
 ```bash
