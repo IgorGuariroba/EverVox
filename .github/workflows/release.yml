@@ -1,14 +1,18 @@
 name: Release
 
-# Publica o pacote .deb automaticamente a cada tag de versão: um push de
-# `vX.Y.Z` gera o pacote via scripts/empacotar-deb.sh e cria o release do
-# GitHub com o .deb anexado e as notas geradas a partir dos PRs.
+# Publica o pacote .deb automaticamente quando a versão do crate muda na
+# main: cada push compara `v<versão>` (crates/daemon/Cargo.toml) com as
+# tags existentes e, se for inédita, gera o pacote via
+# scripts/empacotar-deb.sh e cria o release com o .deb anexado e notas
+# geradas dos PRs — o próprio `gh release create` cria a tag no commit,
+# num único workflow (tag empurrada com GITHUB_TOKEN não dispararia um
+# workflow de release separado, por design do GitHub Actions).
 #
-# Fluxo de release: suba a versão nos Cargo.toml dos crates, mescle na main
-# e então crie a tag correspondente (ex.: git tag v0.1.0 && git push --tags).
+# Fluxo de release: suba a versão nos Cargo.toml dos crates num PR; o
+# merge na main cuida do resto (tag, .deb e release).
 on:
   push:
-    tags: ['v*']
+    branches: [main]
 
 permissions:
   contents: write
@@ -23,35 +27,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Decidir se há versão nova para publicar
+        id: versao
+        run: |
+          versao="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/daemon/Cargo.toml | head -1)"
+          if [ -z "$versao" ]; then
+            echo "erro: não achei a versão em crates/daemon/Cargo.toml." >&2
+            exit 1
+          fi
+          tag="v$versao"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag já existe — nada a publicar."
+            echo "publicar=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "Versão nova ($tag): publicando release."
+            echo "publicar=true" >>"$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+
       - name: Instalar dependências de sistema (ALSA para cpal; cmake/clang para whisper-rs)
+        if: steps.versao.outputs.publicar == 'true'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev cmake libclang-dev
 
       - name: Instalar toolchain Rust
+        if: steps.versao.outputs.publicar == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache de dependências
+        if: steps.versao.outputs.publicar == 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Instalar cargo-deb
+        if: steps.versao.outputs.publicar == 'true'
         run: cargo install cargo-deb --locked
 
-      - name: Conferir que a tag bate com a versão do crate
-        run: |
-          versao_crate="$(cargo pkgid -p evervox-daemon | sed 's/.*#//')"
-          versao_tag="${GITHUB_REF_NAME#v}"
-          if [ "$versao_tag" != "$versao_crate" ]; then
-            echo "erro: tag $GITHUB_REF_NAME não bate com a versão do crate ($versao_crate)." >&2
-            echo "Suba a versão em crates/*/Cargo.toml antes de criar a tag." >&2
-            exit 1
-          fi
-
       - name: Gerar o .deb
+        if: steps.versao.outputs.publicar == 'true'
         run: ./scripts/empacotar-deb.sh
 
-      - name: Criar o release com o .deb anexado
+      - name: Criar tag e release com o .deb anexado
+        if: steps.versao.outputs.publicar == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" target/debian/*.deb \
-            --title "EverVox $GITHUB_REF_NAME" \
+          gh release create "${{ steps.versao.outputs.tag }}" target/debian/*.deb \
+            --target "$GITHUB_SHA" \
+            --title "EverVox ${{ steps.versao.outputs.tag }}" \
             --generate-notes
