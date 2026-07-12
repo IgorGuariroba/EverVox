@@ -1,0 +1,32 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Architectures: amd64
+Date: Sun, 12 Jul 2026 20:41:59 +0000
+Description: Repositório APT do EverVox (ditado por voz para Ubuntu GNOME/Wayland)
+Label: EverVox
+Origin: EverVox
+Suite: estavel
+MD5Sum:
+ f15c515ec27d2d468c73121552fbca49             1141 Packages
+ fe9d8644f628d00f55be06b18471ab8a              752 Packages.gz
+ 63b1374ff32b34f66304c625e0401bc9              189 Release
+SHA1:
+ baeb9064c32cfce2082afd3f571f5f32550577c7             1141 Packages
+ 8ba62b76ac308ed38ab4c0aaa4478d83108f1a55              752 Packages.gz
+ 74bad24c56c698700f121dd3ce28da65b4052c21              189 Release
+SHA256:
+ 0fe8c3d6a1e2d0cfa33c40213ada9adae5288aa56f7198ea79bd0c32ebff15e9             1141 Packages
+ 55f2aa6397d162f624c4531bd89ec8cf345b511a105b7f81b6cee48e8a92c568              752 Packages.gz
+ 2c787f09f36e38535bb9667129562d96b370ba07e5405d89cd7750d1fd76666c              189 Release
+SHA512:
+ d636f64d855e2590aefdd22da2de5cb5d2722f66b21abd13f924b9f780ddf095d453a2350a629db3a93e0194080f0ea5cf7206be562cc406cf75d135c0da0981             1141 Packages
+ d325925cd9fa10c7fcfea568a47c37236d09c758edd56b210713a919f9a16b0e37bd81209ee463eb796bd98eff50b32e2e86dc2def0ef086b299c321f34f1543              752 Packages.gz
+ 7126af4d299f23f95e69ffe0c76517d1cd5b50d57c98431e2e42ebc1920ab5e28b9e89f7697df10be9a3200df51be745afe9f39342a86bc675637665a9f989a2              189 Release
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYKAB0WIQTZYQO3uJvh2lDhpQrIbNQO7RKo8wUCalP8FwAKCRDIbNQO7RKo
+86wdAP9qs7au11xFH6e8V3TM6QwkfkCljEmBwvolj41UWSpAwAD6Az6IErIoo3vi
+GBLURPBfpQLgRad2gDss4qiNgmrYJAw=
+=oyGg
+-----END PGP SIGNATURE-----
