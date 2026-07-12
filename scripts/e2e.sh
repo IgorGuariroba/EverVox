@@ -7,7 +7,7 @@
 #      microfone virtual, o Daemon real (Engine local, whisper base), executa
 #      um Ditado com fala sintetizada e confere a sequência
 #      Estado(gravando) → Estado(processando) → Estado(ocioso).
-#   2. Entrega (clipboard) — degradável: precisa do Weston headless; sem ele
+#   2. Entrega (clipboard) — degradável: precisa do sway headless; sem ele
 #      o estágio é pulado com aviso claro e o teste segue valendo pelo 1.
 #   3. Colar simulado (uinput) — degradável: precisa de /dev/uinput gravável
 #      e leitura de /dev/input/event*; sem isso é pulado com aviso claro.
@@ -15,7 +15,7 @@
 # Pré-requisitos de pacote (Ubuntu):
 #   pipewire wireplumber pipewire-pulse pulseaudio-utils wl-clipboard
 #   dbus-daemon libespeak-ng1 python3 curl
-#   weston            (estágio 2; opcional — degrada se ausente)
+#   sway              (estágio 2; opcional — degrada se ausente)
 #   acesso a uinput   (estágio 3; opcional — degrada se ausente)
 #
 # Uso:
@@ -46,7 +46,7 @@ falha_com_log_do_daemon() {
 # Todo processo em segundo plano entra em PIDS_LIMPEZA na ordem em que sobe;
 # o trap os derruba na ordem inversa (Daemon antes do PipeWire, PipeWire
 # antes do D-Bus) mesmo quando uma `falha` no meio do roteiro dá exit 1 —
-# sem isso, um E2E que falha cedo deixaria dbus/pipewire/weston órfãos
+# sem isso, um E2E que falha cedo deixaria dbus/pipewire/sway órfãos
 # pendurando o job do CI.
 PIDS_LIMPEZA=()
 DIR_TMP="$(mktemp -d)"
@@ -205,23 +205,34 @@ subir_daemon() {
 }
 
 # ── estágio 2 (degradável): compositor Wayland para a Entrega ───────────────
+# Sway (wlroots), não Weston: o wl-clipboard depende do protocolo
+# zwlr_data_control_v1 para operar sem foco de janela — Weston não o
+# implementa, e num compositor headless sem teclado o wl-copy nunca obtém o
+# serial de input que o caminho sem data-control exige (falha com exit 1).
+
+encontrar_socket_wayland() {
+    SOCKET_WAYLAND="$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -name 'wayland-*' -type s -printf '%f\n' 2>/dev/null | head -1)"
+    [ -n "$SOCKET_WAYLAND" ]
+}
 
 subir_wayland() {
-    if ! command -v weston >/dev/null 2>&1; then
-        aviso "Estágio 2 (Entrega/clipboard) pulado: 'weston' não instalado."
+    if ! command -v sway >/dev/null 2>&1; then
+        aviso "Estágio 2 (Entrega/clipboard) pulado: 'sway' não instalado."
         return
     fi
 
-    log "Iniciando Weston headless..."
-    weston --backend=headless-backend.so --socket=wayland-evervox-e2e \
-        >"${DIR_TMP}/weston.log" 2>&1 &
+    log "Iniciando sway headless..."
+    # Config mínima: só os defaults do sway, nenhum atalho ou autostart.
+    : >"${DIR_TMP}/sway.conf"
+    WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman \
+        sway --config "${DIR_TMP}/sway.conf" >"${DIR_TMP}/sway.log" 2>&1 &
     PIDS_LIMPEZA+=($!)
 
-    if ! esperar_condicao 10 test -S "${XDG_RUNTIME_DIR}/wayland-evervox-e2e"; then
-        aviso "Estágio 2 (Entrega/clipboard) pulado: Weston não criou o socket em 10s."
+    if ! esperar_condicao 10 encontrar_socket_wayland; then
+        aviso "Estágio 2 (Entrega/clipboard) pulado: sway não criou socket wayland em 10s."
         return
     fi
-    export WAYLAND_DISPLAY=wayland-evervox-e2e
+    export WAYLAND_DISPLAY="$SOCKET_WAYLAND"
     ESTAGIO2_OK=1
     log "Compositor Wayland pronto (display: $WAYLAND_DISPLAY)"
 }

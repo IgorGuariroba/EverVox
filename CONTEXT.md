@@ -225,7 +225,7 @@ monitor source como default), fala sintetizada por `libespeak-ng` via
 Três estágios (linguagem da issue #24), com contrato de degradação:
 
 1. **Sinais de estado (D-Bus)** — obrigatório; falha aqui falha o teste.
-2. **Entrega (clipboard)** — precisa de `weston` headless; ausente, o
+2. **Entrega (clipboard)** — precisa de `sway` headless (wlroots implementa o data-control que o wl-clipboard exige sem foco; Weston não); ausente, o
    estágio é pulado com aviso. O assert da transcrição é difuso
    (`teste|autom|ditado`): o whisper base transcreve a fala sintetizada de
    forma imprecisa, então um match exato flakaria.

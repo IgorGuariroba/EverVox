@@ -134,7 +134,7 @@ num ambiente isolado, sem tocar na sua sessão:
 Dependências: `pipewire wireplumber pipewire-pulse pulseaudio-utils
 wl-clipboard libespeak-ng1 python3 curl`. O teste tem três estágios:
 os sinais D-Bus de estado (obrigatório), a Entrega no clipboard (pulado
-com aviso se `weston` não estiver instalado) e o colar simulado (pulado
+com aviso se `sway` não estiver instalado) e o colar simulado (pulado
 se não houver acesso a `/dev/uinput`). No CI ele roda como o job `e2e`,
 separado e **não-bloqueante** enquanto estabiliza (ver issue #24). Mais
 detalhes em `CONTEXT.md`.

@@ -66,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Instalar dependências de sistema (PipeWire, Weston, STT, áudio)
+      - name: Instalar dependências de sistema (PipeWire, sway, STT, áudio)
         run: |
           sudo apt-get update
           # pipewire-alsa é essencial: roteia o device ALSA "default" (que o
@@ -74,7 +74,7 @@ jobs:
           # virtual nunca é visto e o Toggle falha com "microfone indisponível".
           sudo apt-get install -y \
             pipewire pipewire-alsa wireplumber pipewire-pulse pulseaudio-utils \
-            weston wl-clipboard \
+            sway wl-clipboard \
             dbus-daemon \
             libespeak-ng1 python3 \
             libcanberra0 \
