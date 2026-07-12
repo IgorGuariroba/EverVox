@@ -8,6 +8,13 @@ use evervox_core::{AudioGravado, EngineSTT, ErroEngine};
 const URL_TRANSCRICOES_OPENAI: &str = "https://api.openai.com/v1/audio/transcriptions";
 const MODELO: &str = "whisper-1";
 
+/// Teto da chamada de transcrição inteira (upload do WAV + resposta). Sem
+/// ele o client do reqwest espera para sempre, e uma API pendurada deixava a
+/// thread de Processando — e o Overlay em "Processando…" — presos até
+/// reiniciar o Daemon. Folgado o bastante para subir minutos de áudio numa
+/// conexão lenta; estourou, o Ditado falha com feedback em vez de travar.
+const TIMEOUT_TRANSCRICAO: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Nome do provedor sob o qual a chave de API é salva no GNOME Keyring (ver
 /// `evervox_segredo` e `evervox set-key`).
 pub const PROVEDOR_OPENAI: &str = "openai";
@@ -43,8 +50,27 @@ impl EngineCloud {
         idioma: &str,
         vocabulario: &[String],
     ) -> Self {
+        Self::com_url_e_timeout(
+            url_transcricoes,
+            chave_api,
+            idioma,
+            vocabulario,
+            TIMEOUT_TRANSCRICAO,
+        )
+    }
+
+    fn com_url_e_timeout(
+        url_transcricoes: String,
+        chave_api: String,
+        idioma: &str,
+        vocabulario: &[String],
+        timeout: std::time::Duration,
+    ) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: reqwest::blocking::Client::builder()
+                .timeout(timeout)
+                .build()
+                .expect("configuração estática do cliente HTTP não deveria falhar"),
             url_transcricoes,
             chave_api,
             idioma: idioma.to_string(),
@@ -199,6 +225,40 @@ mod tests {
         let texto = engine.transcrever(&audio_de_teste()).unwrap();
 
         assert_eq!(texto, "oi mundo");
+    }
+
+    /// Sobe um servidor que aceita a conexão e nunca responde, segurando o
+    /// stream aberto até o fim do teste — simula a API pendurada que deixava
+    /// o Overlay preso em "Processando…" para sempre.
+    fn servidor_que_nunca_responde() -> (String, std::sync::mpsc::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endereco = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let _ = rx.recv();
+                drop(stream);
+            }
+        });
+        (format!("http://{endereco}"), tx)
+    }
+
+    #[test]
+    fn api_pendurada_vira_erro_de_timeout_em_vez_de_travar_o_ditado() {
+        let (url, _segura_conexao) = servidor_que_nunca_responde();
+        let mut engine = EngineCloud::com_url_e_timeout(
+            url,
+            "chave-de-teste".to_string(),
+            "pt",
+            &[],
+            std::time::Duration::from_millis(200),
+        );
+
+        let inicio = std::time::Instant::now();
+        let erro = engine.transcrever(&audio_de_teste()).unwrap_err();
+
+        assert!(erro.0.contains("falha de rede"));
+        assert!(inicio.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]
