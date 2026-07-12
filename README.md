@@ -20,7 +20,7 @@ mexer no código.
 
 Baixe o `evervox_*.deb` da [página de
 releases](https://github.com/IgorGuariroba/EverVox/releases) (publicado
-automaticamente a cada tag `vX.Y.Z`, ver
+automaticamente quando a versão dos crates muda na `main`, ver
 `.github/workflows/release.yml`) — ou gere você mesmo, ver abaixo — e
 instale:
 
