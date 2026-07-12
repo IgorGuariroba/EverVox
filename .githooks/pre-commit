@@ -2,6 +2,15 @@
 # Verificações rápidas antes do commit: formatação e lints.
 set -euo pipefail
 
+# Bloqueia commit direto na main (proteção local; o push para main já é
+# bloqueado em pre-push/GitHub, mas barrar aqui evita perder trabalho: sem
+# isso dá pra commitar em main local à vontade e só descobrir no push que
+# precisa mover os commits pra uma branch).
+if [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]]; then
+    echo "[pre-commit] Commit direto na 'main' bloqueado. Crie uma branch." >&2
+    exit 1
+fi
+
 # Garante que o cargo esteja no PATH mesmo em ambientes não interativos (GUIs, IDEs).
 command -v cargo >/dev/null 2>&1 || export PATH="$HOME/.cargo/bin:$PATH"
 

@@ -185,9 +185,24 @@ Keyring via `evervox set-key openai` ou `evervox set-key anthropic` (a chave
 salva para o provedor escolhido, o Daemon falha na inicialização com uma
 mensagem instruindo a rodar `set-key`.
 
-Nota de design (ADR 0003): a chamada de LLM da Limpeza nasce preparada para
-também fundir a Tradução (ticket futuro) numa única chamada, sem mudar como o
-núcleo a invoca.
+## Tradução (OpenAI/Anthropic)
+
+A Tradução liga automaticamente quando `idioma_saida` difere de
+`idioma_entrada` no `config.toml` (nível raiz) — não há flag própria de
+liga/desliga: o par de idiomas já é a fonte da verdade. Independente da
+Limpeza (cada uma liga/desliga sozinha, ver `CONTEXT.md`), dá para traduzir
+texto literal sem limpar. Quando as duas estão ligadas, o Daemon faz **uma
+única chamada de LLM** que limpa e traduz junto (ver ADR 0003 e
+[`crate::limpeza::Instrucao`]): um só prompt de sistema, um só timeout, um só
+modo de falha no caminho crítico.
+
+A Tradução reutiliza o provedor, modelo e timeout configurados em
+`[limpeza]` — não há uma seção de config própria: é a mesma "costura" de
+chamada de LLM preparada na Limpeza (ver #8), só com um prompt de sistema
+diferente. Em falha ou timeout, vale a mesma regra da Limpeza: a Transcrição
+crua é entregue no idioma falado, com notificação discreta — o Ditado nunca
+fica refém da rede, mesmo que isso signifique receber o texto no idioma
+"errado".
 
 ## Instalação e `evervox status`
 
