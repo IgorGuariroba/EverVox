@@ -2,31 +2,31 @@
 Hash: SHA512
 
 Architectures: amd64
-Date: Sun, 12 Jul 2026 20:41:59 +0000
+Date: Sun, 12 Jul 2026 21:08:58 +0000
 Description: Repositório APT do EverVox (ditado por voz para Ubuntu GNOME/Wayland)
 Label: EverVox
 Origin: EverVox
 Suite: estavel
 MD5Sum:
- f15c515ec27d2d468c73121552fbca49             1141 Packages
- fe9d8644f628d00f55be06b18471ab8a              752 Packages.gz
- 63b1374ff32b34f66304c625e0401bc9              189 Release
+ 3ae0f47464c56c260376dad0338998a0             2282 Packages
+ e2e54312e0aff06cd34db8bddce334c2              889 Packages.gz
+ b6dca54f8da3a740204ce37532bc359f              189 Release
 SHA1:
- baeb9064c32cfce2082afd3f571f5f32550577c7             1141 Packages
- 8ba62b76ac308ed38ab4c0aaa4478d83108f1a55              752 Packages.gz
- 74bad24c56c698700f121dd3ce28da65b4052c21              189 Release
+ 4d9c1534b5c3dd2bb4330fdf0cd4930c50926ed9             2282 Packages
+ 1422ee82161b5609b392f21a8cfaf9dfcd16ef69              889 Packages.gz
+ e2211b901a4d3c5d247a7d7ad71d461c841845da              189 Release
 SHA256:
- 0fe8c3d6a1e2d0cfa33c40213ada9adae5288aa56f7198ea79bd0c32ebff15e9             1141 Packages
- 55f2aa6397d162f624c4531bd89ec8cf345b511a105b7f81b6cee48e8a92c568              752 Packages.gz
- 2c787f09f36e38535bb9667129562d96b370ba07e5405d89cd7750d1fd76666c              189 Release
+ fe353d57fa1b1f078da38e9709d37890bc30e9f3bfbfa85be5cada8e5cd99d8c             2282 Packages
+ e5951cd9cd5e9bcde3326014d5fadf9b672e3a8ddc0342d7bbcf2813cb4091b3              889 Packages.gz
+ 31db7acd098c7e2d0efbaf575fb7d9debf2b6789bf99a3135d24096139dcbc07              189 Release
 SHA512:
- d636f64d855e2590aefdd22da2de5cb5d2722f66b21abd13f924b9f780ddf095d453a2350a629db3a93e0194080f0ea5cf7206be562cc406cf75d135c0da0981             1141 Packages
- d325925cd9fa10c7fcfea568a47c37236d09c758edd56b210713a919f9a16b0e37bd81209ee463eb796bd98eff50b32e2e86dc2def0ef086b299c321f34f1543              752 Packages.gz
- 7126af4d299f23f95e69ffe0c76517d1cd5b50d57c98431e2e42ebc1920ab5e28b9e89f7697df10be9a3200df51be745afe9f39342a86bc675637665a9f989a2              189 Release
+ 773a3505a69e91be42ba7ba7a4d559cd8203f5de95828337b081ea212d9afbdec655ce16a4bddf778cb0b881adfb48a5903122b11cebb0e9fc8f210a273a4b20             2282 Packages
+ 8a47c9af10bec4448be08b5b9919f5a7cee346c1b30114a71bd2ee6d824b7e5eb83a31a64e4f0398c20b9f8b6a50364cd0be31fb9e9f3644472324da87b71ad8              889 Packages.gz
+ 990b982bd662c4db56e5c56090278527c12d069a9e8e738684fdf9eda885221ceb7c0c7db514a963e8d44c6eb957136bf74b8cea6b06e22af2e06c4e97d94217              189 Release
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQTZYQO3uJvh2lDhpQrIbNQO7RKo8wUCalP8FwAKCRDIbNQO7RKo
-86wdAP9qs7au11xFH6e8V3TM6QwkfkCljEmBwvolj41UWSpAwAD6Az6IErIoo3vi
-GBLURPBfpQLgRad2gDss4qiNgmrYJAw=
-=oyGg
+iHUEARYKAB0WIQTZYQO3uJvh2lDhpQrIbNQO7RKo8wUCalQCagAKCRDIbNQO7RKo
+841VAQC4XYo50aX8GDtfCNR7drGrAWjdD6zDQ0IxJsdcXJPnnAD+Onxev52Xco8G
+GyDccsQRBKd0KPSz0DRRSSHYeHuFHw4=
+=sbCw
 -----END PGP SIGNATURE-----
