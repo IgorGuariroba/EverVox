@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ícone do EverVox: microfone com ondas de voz, no estilo de ícone de app
+     do GNOME (quadrado arredondado, canvas 128x128). Instalado em
+     /usr/share/icons/hicolor/scalable/apps/evervox.svg e referenciado pelo
+     evervox.desktop via Icon=evervox. -->
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="fundo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7b5ce0"/>
+      <stop offset="1" stop-color="#4a2fb8"/>
+    </linearGradient>
+    <linearGradient id="mic" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e6e0ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- quadrado arredondado de fundo -->
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#fundo)"/>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="none"
+        stroke="#000000" stroke-opacity="0.15" stroke-width="1"/>
+
+  <!-- ondas de voz laterais -->
+  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" opacity="0.55">
+    <path d="M 30 52 q -8 12 0 24"/>
+    <path d="M 98 52 q 8 12 0 24"/>
+  </g>
+
+  <!-- corpo do microfone -->
+  <rect x="52" y="28" width="24" height="42" rx="12" fill="url(#mic)"/>
+
+  <!-- arco de captação -->
+  <path d="M 42 58 v 4 a 22 22 0 0 0 44 0 v -4" fill="none"
+        stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- haste e base -->
+  <line x1="64" y1="86" x2="64" y2="96" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+  <line x1="50" y1="99" x2="78" y2="99" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+</svg>

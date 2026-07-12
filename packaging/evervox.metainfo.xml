@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Metadados AppStream do EverVox: é o que a Central de Aplicativos
+     (GNOME Software) lê para mostrar nome, ícone, desenvolvedor e descrição
+     em vez de "Editor desconhecido" com ícone genérico. Instalado em
+     /usr/share/metainfo/. -->
+<component type="desktop-application">
+  <id>io.github.igorguariroba.EverVox</id>
+  <name>EverVox</name>
+  <summary>Ditado por voz para GNOME/Wayland</summary>
+  <summary xml:lang="en">Voice dictation for GNOME/Wayland</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.igorguariroba">
+    <name>Igor R. Guariroba</name>
+  </developer>
+  <description>
+    <p>
+      Serviço de ditado por voz para Ubuntu com GNOME Shell em Wayland: um
+      atalho de teclado captura a fala em qualquer app, transcreve
+      (whisper.cpp local ou OpenAI), limpa o texto via LLM (opcional) e
+      entrega ao campo de texto focado.
+    </p>
+    <p>
+      Depois de instalar, rode "evervox-pos-instalar" na sessão gráfica para
+      concluir a configuração (grupo input, extensão GNOME, serviço e atalho
+      de teclado).
+    </p>
+  </description>
+  <launchable type="desktop-id">evervox.desktop</launchable>
+  <url type="homepage">https://github.com/IgorGuariroba/EverVox</url>
+  <url type="bugtracker">https://github.com/IgorGuariroba/EverVox/issues</url>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Utility</category>
+    <category>Accessibility</category>
+  </categories>
+</component>

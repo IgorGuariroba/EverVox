@@ -65,6 +65,19 @@ instalar_extensao() {
     log "Extensão instalada em $EXT_DIR"
 }
 
+instalar_lancador() {
+    log "Instalando o lançador (.desktop) e o ícone..."
+    local apps_dir="$HOME/.local/share/applications"
+    local icones_dir="$HOME/.local/share/icons/hicolor/scalable/apps"
+    mkdir -p "$apps_dir" "$icones_dir"
+    cp "$DIR_REPO/packaging/evervox.desktop" "$apps_dir/evervox.desktop"
+    cp "$DIR_REPO/packaging/evervox.svg" "$icones_dir/evervox.svg"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$apps_dir" 2>/dev/null || true
+    fi
+    log "Lançador instalado: EverVox aparece em 'Mostrar aplicativos' e abre as Preferências."
+}
+
 instalar_servico_systemd() {
     log "Registrando o serviço systemd --user..."
     mkdir -p "$SYSTEMD_DIR"
@@ -138,6 +151,7 @@ registrar_atalho() {
 verificar_pre_requisitos
 instalar_binarios
 instalar_extensao
+instalar_lancador
 instalar_servico_systemd
 configurar_uinput
 registrar_atalho
