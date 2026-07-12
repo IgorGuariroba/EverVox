@@ -1,0 +1,27 @@
+name: Auto-merge
+
+# Liga o auto-merge (squash) em todo PR contra main assim que ele é aberto
+# ou atualizado: o GitHub mescla sozinho quando o check obrigatório `ci`
+# (ver ci.yml e o ruleset "protect-main") ficar verde — sem isso, mesmo com
+# checks verdes o PR fica parado até alguém clicar em "Merge" manualmente.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Habilitar auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        # Idempotente: se já estava ligado (ex.: evento "synchronize" após
+        # um push extra), o comando só devolve um aviso — não falha o job.
+        run: gh pr merge --auto --squash "$PR_URL" || true
