@@ -86,12 +86,29 @@ pactl load-module module-null-sink \
     sink_name=evervox_mic \
     sink_properties=device.description=EverVox_E2E_Mic
 
+# Dá tempo para o WirePlumber expor o sink e o monitor source no grafo do
+# PipeWire antes de consultá-los.
+sleep 1
+
 # O monitor source do null sink é o que o Daemon vai capturar como "microfone".
 # Tudo que for tocado no sink evervox_mic aparece nesse source.
-SINK_ID="$(pactl list short sinks | grep evervox_mic | awk '{print $1}')"
-MONITOR_SOURCE="$(pactl list short sources | grep "${SINK_ID}\.monitor" | awk '{print $2}')"
+# Usamos `pactl list sinks short` (formato: índice\tnome\tdriver\testado).
+# O grep pode falhar se o sink ainda não apareceu — por isso || true e
+# verificação explícita depois (não depende de pipefail).
+SINK_NOME=$(pactl list sinks short 2>/dev/null | { grep evervox_mic || true; } | awk '{print $2}')
+if [ -z "$SINK_NOME" ]; then
+    falha "Sink 'evervox_mic' não encontrado em 'pactl list sinks short'"
+fi
+
+# O monitor source aparece com nome "<sink_name>.monitor" no PipeWire.
+MONITOR_SOURCE="${SINK_NOME}.monitor"
+# Confirma que o monitor source existe antes de setar como default.
+if ! pactl list sources short 2>/dev/null | grep -q "${MONITOR_SOURCE}"; then
+    falha "Monitor source '${MONITOR_SOURCE}' não encontrado"
+fi
+
 pactl set-default-source "$MONITOR_SOURCE"
-passo "Microfone virtual: sink=$SINK_ID, source=$MONITOR_SOURCE (default)"
+passo "Microfone virtual: sink=$SINK_NOME, source=$MONITOR_SOURCE (default)"
 
 # ── 4. Weston headless (wl-copy/wl-paste precisam de compositor) ───────────
 passo "Iniciando Weston headless..."
