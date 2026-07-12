@@ -33,7 +33,7 @@ import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 import Secret from 'gi://Secret';
 
-import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensionPrefs.js';
+import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const DAEMON_SERVICE_NAME = 'com.evervox.Daemon';
 const DAEMON_OBJECT_PATH = '/com/evervox/Daemon';
