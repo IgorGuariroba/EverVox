@@ -63,13 +63,11 @@ jobs:
           fi
 
   # ── E2E: pipeline de Ditado ponta a ponta em ambiente headless ──────────
-  # Job separado e NÃO-bloqueante: falha aqui não trava o merge.
-  # Promover a bloqueante só depois de estabilizar por algumas semanas
-  # (ver issue #24).
+  # Bloqueante desde 2026-07-12 (promovido via issue #24): exigido no
+  # ruleset "protect-main" junto com `ci`, falha aqui trava o merge.
   e2e:
     name: e2e (pipeline headless)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
