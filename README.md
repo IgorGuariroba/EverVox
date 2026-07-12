@@ -159,6 +159,15 @@ cargo fmt --all
 Push direto para `main` é bloqueado; todo merge entra por PR com o check
 `ci` verde.
 
+### Release
+
+Para publicar uma versão nova, suba a versão nos `Cargo.toml` dos crates
+num PR e mescle: o merge na `main` dispara o workflow `Release`, que cria
+a tag `v<versão>`, gera o `.deb` e publica o release do GitHub com o
+pacote anexado — nenhum passo manual. Se o workflow não disparar (ex.:
+merge feito por bot), acione-o à mão com `gh workflow run Release`; a
+checagem de versão inédita evita release duplicado.
+
 ### Teste E2E headless
 
 `scripts/e2e.sh` exercita o pipeline real do Ditado de ponta a ponta —
