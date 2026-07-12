@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Execução diária só do job e2e: acumula histórico de estabilidade para
+  # promovê-lo a bloqueante (critério: ~10-15 execuções consecutivas verdes,
+  # ver issue #24), mesmo em semanas sem PRs.
+  schedule:
+    - cron: '0 9 * * *' # 09:00 UTC = 06:00 BRT
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,6 +17,8 @@ env:
 jobs:
   ci:
     name: ci
+    # O agendamento diário existe só para o e2e; o ci roda em push/PR.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
