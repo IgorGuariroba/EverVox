@@ -49,7 +49,7 @@ teclado."""
 section = "sound"
 priority = "optional"
 depends = "$auto"
-recommends = "gnome-shell (>= 45)"
+recommends = "gnome-shell (>= 45), gjs"
 maintainer-scripts = "../../packaging/debian"
 assets = [
     ["target/release/evervox-daemon", "usr/bin/", "755"],
@@ -63,6 +63,8 @@ assets = [
     ["../../packaging/evervox.metainfo.xml", "usr/share/metainfo/", "644"],
     ["../../gnome-extension/extension.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../gnome-extension/prefs.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
+    ["../../gnome-extension/preferencias_ui.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
+    ["../../gnome-extension/aplicativo_preferencias.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../gnome-extension/metadata.json", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../gnome-extension/stylesheet.css", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../README.md", "usr/share/doc/evervox/", "644"],

@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
-# Abre as Preferências do EverVox (prefs da extensão GNOME) — é o Exec do
-# lançador evervox.desktop. No Wayland o GNOME Shell só varre os diretórios
-# de extensões no login, então logo após instalar OU ATUALIZAR o pacote a
-# extensão "não existe" para a sessão atual. Nesse caso, em vez de só avisar,
-# oferece encerrar a sessão na hora (gnome-session-quit) — único jeito de o
-# Shell passar a enxergar a extensão. Se os arquivos nem estão no disco, o
-# problema é outro: instalação incompleta.
+# Abre as Preferências do EverVox — é o Exec do lançador evervox.desktop.
+# Roda o app standalone (`aplicativo_preferencias.js`, issue #47) direto do
+# diretório da extensão via gjs, sem pedir nada ao GNOME Shell: no Wayland o
+# Shell só varre os diretórios de extensões no login, então logo após
+# instalar ou atualizar o pacote o `gnome-extensions prefs` falharia — mas
+# os arquivos já estão no disco e a UI funciona igual. O caminho pelo Shell
+# fica como fallback para quando o gjs não estiver disponível.
 #
 # Uso: evervox-preferencias
 
 EXT_UUID="evervox@evervox.local"
 TITULO="EverVox"
-
-if gnome-extensions info "$EXT_UUID" >/dev/null 2>&1; then
-    exec gnome-extensions prefs "$EXT_UUID"
-fi
 
 avisar() {
     local mensagem="$1"
@@ -27,27 +23,25 @@ avisar() {
     fi
 }
 
-extensao_no_disco() {
-    [ -f "/usr/share/gnome-shell/extensions/$EXT_UUID/metadata.json" ] ||
-        [ -f "$HOME/.local/share/gnome-shell/extensions/$EXT_UUID/metadata.json" ]
-}
-
-if ! extensao_no_disco; then
-    avisar "A extensão GNOME do EverVox não está instalada. Reinstale o pacote (sudo apt install --reinstall evervox) e rode 'evervox-pos-instalar'."
-    exit 1
-fi
-
-# Arquivos no disco, mas o Shell da sessão não os vê: o pacote foi instalado
-# ou atualizado nesta sessão. Oferece o logout na hora; o gnome-session-quit
-# ainda mostra a confirmação do próprio GNOME antes de encerrar.
-if command -v zenity >/dev/null 2>&1; then
-    if zenity --question --title="$TITULO" \
-        --text="O EverVox foi instalado ou atualizado nesta sessão, e o GNOME só carrega a extensão no próximo login.\n\nEncerrar a sessão agora?" \
-        --ok-label="Encerrar sessão" --cancel-label="Agora não"; then
-        exec gnome-session-quit --logout
+# Instalação de fonte (~/.local) tem precedência sobre a do pacote, como nos
+# diretórios de extensões do próprio GNOME.
+for dir in "$HOME/.local/share/gnome-shell/extensions/$EXT_UUID" \
+    "/usr/share/gnome-shell/extensions/$EXT_UUID"; do
+    app="$dir/aplicativo_preferencias.js"
+    if [ -f "$app" ] && command -v gjs >/dev/null 2>&1; then
+        exec gjs -m "$app"
     fi
-    exit 0
+done
+
+# Sem gjs (ou pacote antigo sem o app standalone): tenta pelo Shell.
+if gnome-extensions info "$EXT_UUID" >/dev/null 2>&1; then
+    exec gnome-extensions prefs "$EXT_UUID"
 fi
 
-avisar "O EverVox foi instalado ou atualizado nesta sessão: saia e entre de novo (logout/login) para o GNOME carregar a extensão."
+if [ -d "$HOME/.local/share/gnome-shell/extensions/$EXT_UUID" ] ||
+    [ -d "/usr/share/gnome-shell/extensions/$EXT_UUID" ]; then
+    avisar "Para abrir as Preferências instale o 'gjs' (sudo apt install gjs) ou saia e entre de novo na sessão (logout/login) para o GNOME carregar a extensão."
+else
+    avisar "A extensão GNOME do EverVox não está instalada. Reinstale o pacote (sudo apt install --reinstall evervox) e rode 'evervox-pos-instalar'."
+fi
 exit 1
