@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "evervox-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "evervox-core",
@@ -658,11 +658,11 @@ dependencies = [
 
 [[package]]
 name = "evervox-core"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "evervox-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cpal",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "evervox-segredo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "keyring",
