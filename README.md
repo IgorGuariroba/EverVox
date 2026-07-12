@@ -121,6 +121,24 @@ cargo fmt --all
 Push direto para `main` é bloqueado; todo merge entra por PR com o check
 `ci` verde.
 
+### Teste E2E headless
+
+`scripts/e2e.sh` exercita o pipeline real do Ditado de ponta a ponta —
+Daemon real, whisper.cpp, microfone virtual PipeWire, fala sintetizada —
+num ambiente isolado, sem tocar na sua sessão:
+
+```bash
+./scripts/e2e.sh
+```
+
+Dependências: `pipewire wireplumber pipewire-pulse pulseaudio-utils
+wl-clipboard libespeak-ng1 python3 curl`. O teste tem três estágios:
+os sinais D-Bus de estado (obrigatório), a Entrega no clipboard (pulado
+com aviso se `sway` não estiver instalado) e o colar simulado (pulado
+se não houver acesso a `/dev/uinput`). No CI ele roda como o job `e2e`,
+separado e **não-bloqueante** enquanto estabiliza (ver issue #24). Mais
+detalhes em `CONTEXT.md`.
+
 Detalhes de arquitetura, contratos D-Bus (extensão GNOME, Overlay) e
 permissões de `uinput` estão em [`CONTEXT.md`](CONTEXT.md). Decisões de
 design registradas como ADRs ficam em [`docs/adr/`](docs/adr/).

@@ -211,3 +211,34 @@ diagnóstico continuar útil mesmo com parte do sistema fora do ar:
   confirmar presença; o valor devolvido não importa aqui.
 - **Chaves de API**: consulta o GNOME Keyring diretamente (`evervox-segredo`)
   para `openai` e `anthropic`, independente do que a config atual exige.
+
+## E2E automatizado (`scripts/e2e.sh`)
+
+Exercita o pipeline real do Ditado (Toggle → Gravação → Engine local →
+Entrega → sinais do Overlay) num ambiente headless isolado — D-Bus de
+sessão próprio, PipeWire próprio com microfone virtual (null sink +
+monitor source como default), fala sintetizada por `libespeak-ng` via
+`scripts/e2e-fixture.py` (chamada pela biblioteca, sem depender do binário
+`espeak-ng`), Daemon real com whisper base. Nenhum código de produção tem
+"modo de teste": os adaptadores reais rodam como em produção.
+
+Três estágios (linguagem da issue #24), com contrato de degradação:
+
+1. **Sinais de estado (D-Bus)** — obrigatório; falha aqui falha o teste.
+2. **Entrega (clipboard)** — precisa de `sway` headless (wlroots implementa
+   o data-control que o wl-clipboard exige sem foco; Weston não); ausente, o
+   estágio é pulado com aviso. Como a Entrega restaura o clipboard anterior
+   quando o colar funciona (ADR 0001), o assert semeia uma sentinela antes
+   do Ditado, observa a Transcrição passar pelo clipboard via
+   `wl-paste --watch` e confere a restauração da sentinela no final. O
+   match da transcrição é difuso (`teste|autom|ditado`): o whisper base
+   transcreve a fala sintetizada de forma imprecisa, então um match exato
+   flakaria.
+3. **Colar simulado (uinput)** — precisa de `/dev/uinput` gravável e
+   leitura de `/dev/input/event*` (`scripts/e2e-teclas.py` lê o dispositivo
+   direto, sem `evtest`); sem acesso, é pulado com aviso.
+
+No CI, o job `e2e` roda separado do `ci` e é **não-bloqueante**
+(`continue-on-error: true`) enquanto estabiliza — promover a bloqueante só
+depois de rodar limpo por um período (ver issue #24). O modelo whisper é
+cacheado entre runs (`~/.cache/evervox-e2e`).

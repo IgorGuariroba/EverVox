@@ -402,13 +402,28 @@ async fn main() -> zbus::Result<()> {
         avisar(&mensagem).await;
     }
 
-    let foco = FocoGnome::nova(config.terminais_conhecidos.clone());
+    // `FocoGnome::nova`/`DaemonFeedback::nova` abrem `zbus::blocking::Connection`
+    // (ver `foco.rs` e `DaemonFeedback::emitir_estado`), que por baixo dos
+    // panos constrói e roda seu próprio runtime Tokio. Chamado direto aqui
+    // dentro do `async fn main` (rodando *já* sobre um runtime Tokio), isso
+    // entra em pânico com "Cannot start a runtime from within a runtime" —
+    // por isso a construção roda numa thread da pool bloqueante, fora do
+    // contexto do runtime externo.
+    let terminais_conhecidos = config.terminais_conhecidos.clone();
+    let (foco, feedback) = tokio::task::spawn_blocking(move || {
+        (
+            FocoGnome::nova(terminais_conhecidos),
+            DaemonFeedback::nova(),
+        )
+    })
+    .await
+    .expect("thread de inicialização do Foco/Feedback não deveria falhar");
     let resumo_engine = resumir_engine(&config);
     let resumo_limpeza = resumir_limpeza(&config);
 
     let service = DaemonService {
         machine: Mutex::new(Machine::new(
-            DaemonFeedback::nova(),
+            feedback,
             MicrofoneCpal::default(),
             engine,
             limpeza,

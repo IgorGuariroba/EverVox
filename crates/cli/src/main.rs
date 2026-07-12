@@ -41,13 +41,29 @@ async fn set_key(provedor: Option<String>) {
         std::process::exit(1);
     }
 
-    match evervox_segredo::salvar(&provedor, &chave) {
+    match salvar_chave(provedor.clone(), chave).await {
         Ok(()) => println!("Chave de '{provedor}' salva no GNOME Keyring."),
         Err(erro) => {
             eprintln!("evervox: falha ao salvar a chave: {erro}");
             std::process::exit(1);
         }
     }
+}
+
+/// Chama `evervox_segredo::salvar` numa thread da pool bloqueante do Tokio.
+/// O backend do Keyring (`secret-service`, via `keyring`) abre sua própria
+/// `zbus::blocking::Connection`, que por baixo dos panos constrói e roda um
+/// runtime Tokio próprio — chamado direto dentro do `async fn main` (que já
+/// roda sobre um runtime Tokio), isso entra em pânico com "Cannot start a
+/// runtime from within a runtime" (ver mesmo cuidado em
+/// `crates/daemon/src/main.rs`, na construção do `Foco`/`Feedback`).
+async fn salvar_chave(provedor: String, chave: String) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || evervox_segredo::salvar(&provedor, &chave)).await?
+}
+
+/// Como [`salvar_chave`], mas para `evervox_segredo::carregar`.
+async fn carregar_chave(provedor: &'static str) -> anyhow::Result<Option<String>> {
+    tokio::task::spawn_blocking(move || evervox_segredo::carregar(provedor)).await?
 }
 
 async fn toggle() {
@@ -113,7 +129,7 @@ async fn status() {
 
     println!("Chaves de API:");
     for provedor in PROVEDORES_DE_CHAVE {
-        let situacao = match evervox_segredo::carregar(provedor) {
+        let situacao = match carregar_chave(provedor).await {
             Ok(Some(_)) => "salva",
             Ok(None) => "não configurada",
             Err(erro) => {
