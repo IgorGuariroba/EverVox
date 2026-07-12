@@ -26,4 +26,4 @@ cargo deb -p evervox-daemon --no-build
 
 echo
 echo "==> Pacote gerado em target/debian/. Instale com:"
-ls -1 "$DIR_REPO"/target/debian/*.deb | tail -1 | sed 's/^/    sudo apt install /'
+find "$DIR_REPO/target/debian" -maxdepth 1 -name '*.deb' -printf '    sudo apt install %p\n'
