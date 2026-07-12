@@ -33,3 +33,15 @@ pub fn carregar(provedor: &str) -> anyhow::Result<Option<String>> {
         )),
     }
 }
+
+/// Remove a chave de API do `provedor` do GNOME Keyring (ação "Remover" das
+/// Preferências). Idempotente: remover uma chave já ausente não é erro, já
+/// que o resultado desejado ("nenhuma chave salva") já vale.
+pub fn remover(provedor: &str) -> anyhow::Result<()> {
+    match entrada(provedor)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(erro) => Err(anyhow::anyhow!(
+            "não foi possível remover a chave do Keyring: {erro}"
+        )),
+    }
+}

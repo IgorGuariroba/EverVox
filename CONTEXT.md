@@ -159,6 +159,10 @@ uma mensagem instruindo a rodar `set-key`. Falha de rede ou da API cloud não
 cai silenciosamente para o Engine local — vira uma notificação de falha do
 Ditado, igual a qualquer outra falha do Engine.
 
+`evervox remove-key <provedor>` remove a chave do Keyring — fallback CLI da
+ação "Remover" das Preferências (ver seção abaixo), para quem não usa a
+extensão GNOME.
+
 ## Limpeza por LLM (OpenAI/Anthropic)
 
 Com `[limpeza] habilitada = true` no `config.toml`, a Transcrição crua passa
@@ -204,6 +208,43 @@ crua é entregue no idioma falado, com notificação discreta — o Ditado nunca
 fica refém da rede, mesmo que isso signifique receber o texto no idioma
 "errado".
 
+## Preferências (recarga de config)
+
+A UI de configuração (ADR 0004, issue #19) vive em `gnome-extension/prefs.js`
+(GTK4/Adwaita), aberta pelo app Extensions do GNOME — edita o `config.toml`
+diretamente e gerencia chaves de API no GNOME Keyring via Secret Service
+(nunca as lê de volta para a tela: só "chave salva ✓" + Substituir/Remover).
+Sem a extensão instalada, ou sem o Daemon rodando, a CLI + `config.toml`
+seguem como fallback completo — a tela só facilita a edição.
+
+Ao salvar, a UI chama um contrato D-Bus novo que recarrega a config em
+memória sem reiniciar o processo:
+
+- destino: `com.evervox.Daemon`
+- objeto: `/com/evervox/Daemon`
+- interface: `com.evervox.Daemon1`
+- método: `RecarregarConfig() -> s` — `"ok"` | `"restart_necessario"` |
+  `"erro: <mensagem>"`
+
+**Campos quentes** (aplicados na hora por
+`crates/daemon/src/main.rs::aplicar_campos_quentes`): idioma de entrada/saída,
+terminais conhecidos, Vocabulário e a Limpeza inteira (habilitada, provedor,
+modelo, instruções, timeout, pontuação falada) — reconstruir a Limpeza é
+barato (só o cliente HTTP, sem carregar modelo). **Só `engine` (Local/Cloud)
+e `modelo_local` exigem restart** (`precisa_reiniciar`, mesmo arquivo): a UI
+recebe `"restart_necessario"` e oferece reiniciar o Daemon
+(`systemctl --user restart evervox`).
+
+A CLI também expõe esse contrato via `evervox reload-config`, útil para
+verificar/automatizar a recarga sem depender de uma sessão GNOME.
+
+O schema de atributos do Keyring usado pelo `prefs.js` para interoperar com
+`evervox-segredo` está documentado no cabeçalho de `gnome-extension/prefs.js`:
+o backend Linux do crate `keyring` (`zbus-secret-service-keyring-store`) grava
+cada chave com exatamente os atributos `{service: "evervox", username:
+<provedor>}`, sem `target` nem `xdg:schema` — por isso o `Secret.Schema` do
+GJS usa `Secret.SchemaFlags.DONT_MATCH_NAME`.
+
 ## Instalação e `evervox status`
 
 `scripts/instalar.sh` (ver README) builda os binários, registra o Daemon
@@ -216,12 +257,13 @@ sem empacotamento deb/flatpak (fora de escopo, ver spec #1).
 diagnóstico continuar útil mesmo com parte do sistema fora do ar:
 
 - **Daemon**: chama o método D-Bus `Status()` em `com.evervox.Daemon1`
-  (mesma interface do `Toggle`). A resposta é só a descrição do Engine e da
-  Limpeza resolvidos na inicialização (ver `resumir_engine`/`resumir_limpeza`
-  em `crates/daemon/src/main.rs`) — o Daemon nunca chega a servir D-Bus se o
-  Engine ou a Limpeza falharem ao preparar, então responder já garante que o
-  Engine terminou de preparar (para `engine = "local"`, isso inclui o modelo
-  carregado em memória; para `"cloud"` não há modelo local a carregar).
+  (mesma interface do `Toggle`). A resposta é a descrição do Engine e da
+  Limpeza resolvidos a partir da config ativa no momento (ver
+  `resumir_engine`/`resumir_limpeza` em `crates/daemon/src/main.rs`) — como a
+  Limpeza recarrega a quente (ver seção "Preferências" acima), o resumo
+  reflete a última recarga bem-sucedida; o Engine só muda depois de um
+  restart, então continua garantindo que o modelo terminou de carregar (para
+  `engine = "local"`; para `"cloud"` não há modelo local a carregar).
 - **Extensão GNOME**: chama `AppFocado()` (ver seção acima) só para
   confirmar presença; o valor devolvido não importa aqui.
 - **Chaves de API**: consulta o GNOME Keyring diretamente (`evervox-segredo`)

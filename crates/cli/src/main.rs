@@ -12,9 +12,14 @@ async fn main() {
     match comando.as_deref() {
         Some("toggle") => toggle().await,
         Some("set-key") => set_key(std::env::args().nth(2)).await,
+        Some("remove-key") => remove_key(std::env::args().nth(2)).await,
         Some("status") => status().await,
+        Some("reload-config") => reload_config().await,
         _ => {
-            eprintln!("uso: evervox toggle | evervox set-key <provedor> | evervox status");
+            eprintln!(
+                "uso: evervox toggle | evervox set-key <provedor> | evervox remove-key <provedor> \
+                 | evervox status | evervox reload-config"
+            );
             std::process::exit(1);
         }
     }
@@ -48,6 +53,30 @@ async fn set_key(provedor: Option<String>) {
             std::process::exit(1);
         }
     }
+}
+
+/// Remove a chave de API do `provedor` do GNOME Keyring — o mesmo caminho
+/// que a ação "Remover" das Preferências usa via Secret Service direto do
+/// GJS (ver `gnome-extension/prefs.js`), exposto aqui como fallback CLI para
+/// quem não usa a extensão GNOME.
+async fn remove_key(provedor: Option<String>) {
+    let Some(provedor) = provedor else {
+        eprintln!("uso: evervox remove-key <provedor>");
+        std::process::exit(1);
+    };
+
+    match remover_chave(provedor.clone()).await {
+        Ok(()) => println!("Chave de '{provedor}' removida do GNOME Keyring."),
+        Err(erro) => {
+            eprintln!("evervox: falha ao remover a chave: {erro}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Como [`salvar_chave`], mas para `evervox_segredo::remover`.
+async fn remover_chave(provedor: String) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || evervox_segredo::remover(&provedor)).await?
 }
 
 /// Chama `evervox_segredo::salvar` numa thread da pool bloqueante do Tokio.
@@ -90,6 +119,37 @@ async fn enviar_toggle() -> anyhow::Result<String> {
         .await?;
     let estado: String = reply.body().deserialize()?;
     Ok(estado)
+}
+
+/// Pede ao Daemon para reler o `config.toml` e aplicar os campos quentes das
+/// Preferências (ver ADR 0004 e `CONTEXT.md`) sem reiniciar o processo —
+/// mesmo contrato D-Bus (`RecarregarConfig`) que `prefs.js` chama ao salvar,
+/// exposto na CLI para permitir verificar/automatizar a recarga sem depender
+/// de uma sessão GNOME.
+async fn reload_config() {
+    match enviar_recarregar_config().await {
+        Ok(resultado) => println!("{resultado}"),
+        Err(erro) => {
+            eprintln!("evervox: {erro}");
+            notificar_daemon_indisponivel(&erro.to_string()).await;
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn enviar_recarregar_config() -> anyhow::Result<String> {
+    let connection = Connection::session().await?;
+    let reply = connection
+        .call_method(
+            Some(dbus::SERVICE_NAME),
+            dbus::OBJECT_PATH,
+            Some(dbus::INTERFACE_NAME),
+            "RecarregarConfig",
+            &(),
+        )
+        .await?;
+    let resultado: String = reply.body().deserialize()?;
+    Ok(resultado)
 }
 
 async fn notificar_daemon_indisponivel(detalhe: &str) {

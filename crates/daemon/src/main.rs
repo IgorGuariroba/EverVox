@@ -167,12 +167,12 @@ type MachineDoDaemon = Machine<
 
 struct DaemonService {
     machine: Mutex<MachineDoDaemon>,
-    /// Resumo do Engine, da Limpeza e da Tradução resolvidos na
-    /// inicialização (ver `resumir_engine`/`resumir_limpeza`/
-    /// `resumir_traducao`), devolvido por [`DaemonService::status`].
-    resumo_engine: String,
-    resumo_limpeza: String,
-    resumo_traducao: String,
+    /// A config que reflete o que está de fato rodando: usada por
+    /// [`DaemonService::status`] (computa os resumos na hora, sem duplicar
+    /// estado) e por [`DaemonService::recarregar_config`] (base de
+    /// comparação para os campos quentes). `engine`/`modelo_local` só mudam
+    /// aqui quando o Daemon reinicia (ver [`aplicar_campos_quentes`]).
+    config_ativa: Mutex<config::Config>,
 }
 
 #[interface(name = "com.evervox.Daemon1")]
@@ -198,15 +198,89 @@ impl DaemonService {
     }
 
     /// Resumo de saúde do Daemon para `evervox status`: o Engine e a
-    /// Limpeza resolvidos na inicialização. Responder já implica que o
-    /// modelo/Engine terminou de carregar — o Daemon falha na inicialização
-    /// e nunca chega a servir D-Bus se isso não acontecer (ver
+    /// Limpeza resolvidos a partir da config ativa no momento. Responder já
+    /// implica que o modelo/Engine terminou de carregar — o Daemon falha na
+    /// inicialização e nunca chega a servir D-Bus se isso não acontecer (ver
     /// `preparar_engine`/`preparar_limpeza`).
     async fn status(&self) -> String {
+        let config = self.config_ativa.lock().await;
         format!(
             "{}\n{}\n{}",
-            self.resumo_engine, self.resumo_limpeza, self.resumo_traducao
+            resumir_engine(&config),
+            resumir_limpeza(&config),
+            resumir_traducao(&config)
         )
+    }
+
+    /// Recarrega o `config.toml` do disco e aplica os campos quentes das
+    /// Preferências (ver ADR 0004 e `CONTEXT.md`) sem reiniciar o Daemon:
+    /// idiomas, terminais conhecidos, Vocabulário e toda a Limpeza
+    /// (habilitada/provedor/modelo/instruções/timeout/pontuação falada).
+    /// `engine`/`modelo_local` nunca são aplicados aqui — mudá-los exige
+    /// reiniciar o Daemon, e esta chamada devolve `"restart_necessario"`
+    /// nesse caso para a UI avisar o usuário.
+    ///
+    /// A nova `[limpeza]` só é gravada em `config_ativa` se a Limpeza for
+    /// reconstruída com sucesso (ver [`preparar_limpeza`]): caso contrário
+    /// `evervox status` mentiria sobre o que está de fato rodando (ex.:
+    /// mostrar "ligada" com o provedor novo enquanto a `Machine` ainda usa a
+    /// Limpeza anterior por falta de chave de API para o provedor novo).
+    async fn recarregar_config(&self) -> String {
+        let novo = match config::carregar_ou_criar() {
+            Ok(config) => config,
+            Err(erro) => return format!("erro: {erro}"),
+        };
+
+        let mut config_ativa = self.config_ativa.lock().await;
+        let restart_necessario = precisa_reiniciar(&config_ativa, &novo);
+        aplicar_campos_quentes(&mut config_ativa, &novo);
+
+        {
+            let machine = self.machine.lock().await;
+            machine
+                .foco()
+                .lock()
+                .unwrap()
+                .atualizar_terminais(config_ativa.terminais_conhecidos.clone());
+            machine
+                .engine()
+                .lock()
+                .unwrap()
+                .atualizar_hint(&config_ativa.idioma_entrada, &config_ativa.vocabulario);
+        }
+
+        let mut candidato_limpeza = config_ativa.clone();
+        candidato_limpeza.limpeza = novo.limpeza.clone();
+        let timeout = std::time::Duration::from_millis(candidato_limpeza.limpeza.timeout_ms);
+        let limpeza_config = limpeza_execucao(&candidato_limpeza, timeout);
+
+        let nova_limpeza = tokio::task::spawn_blocking({
+            let candidato_limpeza = candidato_limpeza.clone();
+            move || preparar_limpeza(&candidato_limpeza, timeout)
+        })
+        .await
+        .expect("thread de recarga da Limpeza não deveria falhar");
+        match nova_limpeza {
+            Ok(nova_limpeza) => {
+                self.machine
+                    .lock()
+                    .await
+                    .substituir_limpeza(nova_limpeza, limpeza_config);
+                config_ativa.limpeza = candidato_limpeza.limpeza;
+            }
+            Err(erro) => {
+                eprintln!(
+                    "evervox-daemon: recarga de config: falha ao preparar a Limpeza, \
+                     mantendo a anterior: {erro}"
+                );
+            }
+        }
+
+        if restart_necessario {
+            "restart_necessario".to_string()
+        } else {
+            "ok".to_string()
+        }
     }
 }
 
@@ -335,6 +409,17 @@ fn traducao_ligada(config: &config::Config) -> bool {
     config.idioma_entrada != config.idioma_saida
 }
 
+/// Monta o [`LimpezaExecucao`] do caminho crítico do Ditado a partir da
+/// config: ligada quando a Limpeza está habilitada ou a Tradução está ligada
+/// (ver [`traducao_ligada`]) — usado tanto na inicialização quanto em
+/// [`DaemonService::recarregar_config`].
+fn limpeza_execucao(config: &config::Config, timeout: std::time::Duration) -> LimpezaExecucao {
+    LimpezaExecucao {
+        habilitada: config.limpeza.habilitada || traducao_ligada(config),
+        timeout,
+    }
+}
+
 fn contexto_limpeza(config: &config::Config) -> limpeza::ContextoLimpeza {
     limpeza::ContextoLimpeza {
         instrucoes: config.limpeza.instrucoes.clone(),
@@ -364,6 +449,29 @@ fn instrucao_llm(
         }),
         (false, false) => None,
     }
+}
+
+/// Decide se a recarga de config (Preferências, ver ADR 0004) exige
+/// reiniciar o Daemon: só quando o Engine STT (Local/Cloud) ou o modelo
+/// local mudam, já que recarregá-los em memória tem o custo pesado de
+/// carregar o modelo whisper.cpp de novo (ver [`preparar_engine`]). Todo o
+/// resto da config é aplicado a quente por [`aplicar_campos_quentes`].
+fn precisa_reiniciar(atual: &config::Config, novo: &config::Config) -> bool {
+    atual.engine != novo.engine || atual.modelo_local != novo.modelo_local
+}
+
+/// Aplica em `atual` os campos quentes de `novo` que nunca podem falhar ao
+/// aplicar: idiomas, terminais conhecidos e Vocabulário. Nunca toca `engine`
+/// nem `modelo_local` — esses só mudam reiniciando o Daemon (ver
+/// [`precisa_reiniciar`]). A `[limpeza]` é tratada à parte por
+/// [`DaemonService::recarregar_config`], já que reconstruir a Limpeza pode
+/// falhar (ex.: chave de API ausente para o provedor novo) e só deve valer
+/// em `config_ativa` se a reconstrução funcionar.
+fn aplicar_campos_quentes(atual: &mut config::Config, novo: &config::Config) {
+    atual.idioma_entrada = novo.idioma_entrada.clone();
+    atual.idioma_saida = novo.idioma_saida.clone();
+    atual.terminais_conhecidos = novo.terminais_conhecidos.clone();
+    atual.vocabulario = novo.vocabulario.clone();
 }
 
 /// Prepara a Limpeza e/ou a Tradução escolhidas pela config — desligadas,
@@ -441,20 +549,33 @@ async fn main() -> zbus::Result<()> {
         config.idioma_entrada, config.idioma_saida, config.modelo_local, config.engine
     );
 
-    let engine = preparar_engine(&config).unwrap_or_else(|erro| {
-        eprintln!("evervox-daemon: falha fatal ao preparar o Engine: {erro}");
-        std::process::exit(1);
-    });
+    // `preparar_engine` (Cloud) e `preparar_limpeza` (habilitada ou Tradução
+    // ligada) podem chamar `evervox_segredo::carregar`, que abre sua própria
+    // `zbus::blocking::Connection` com o Keyring — mesmo cuidado do
+    // Foco/Feedback logo abaixo: chamado direto aqui dentro do `async fn
+    // main` (já rodando sobre um runtime Tokio), entra em pânico com "Cannot
+    // start a runtime from within a runtime".
+    let config_para_engine = config.clone();
+    let engine = tokio::task::spawn_blocking(move || preparar_engine(&config_para_engine))
+        .await
+        .expect("thread de preparação do Engine não deveria falhar")
+        .unwrap_or_else(|erro| {
+            eprintln!("evervox-daemon: falha fatal ao preparar o Engine: {erro}");
+            std::process::exit(1);
+        });
 
     let timeout_limpeza = std::time::Duration::from_millis(config.limpeza.timeout_ms);
-    let limpeza = preparar_limpeza(&config, timeout_limpeza).unwrap_or_else(|erro| {
+    let config_para_limpeza = config.clone();
+    let limpeza = tokio::task::spawn_blocking(move || {
+        preparar_limpeza(&config_para_limpeza, timeout_limpeza)
+    })
+    .await
+    .expect("thread de preparação da Limpeza não deveria falhar")
+    .unwrap_or_else(|erro| {
         eprintln!("evervox-daemon: falha fatal ao preparar a Limpeza: {erro}");
         std::process::exit(1);
     });
-    let limpeza_config = LimpezaExecucao {
-        habilitada: config.limpeza.habilitada || traducao_ligada(&config),
-        timeout: timeout_limpeza,
-    };
+    let limpeza_config = limpeza_execucao(&config, timeout_limpeza);
 
     let (entrega, aviso_colar_indisponivel) = EntregaClipboard::nova();
     if let Some(mensagem) = aviso_colar_indisponivel {
@@ -477,9 +598,6 @@ async fn main() -> zbus::Result<()> {
     })
     .await
     .expect("thread de inicialização do Foco/Feedback não deveria falhar");
-    let resumo_engine = resumir_engine(&config);
-    let resumo_limpeza = resumir_limpeza(&config);
-    let resumo_traducao = resumir_traducao(&config);
 
     let service = DaemonService {
         machine: Mutex::new(Machine::new(
@@ -491,9 +609,7 @@ async fn main() -> zbus::Result<()> {
             entrega,
             foco,
         )),
-        resumo_engine,
-        resumo_limpeza,
-        resumo_traducao,
+        config_ativa: Mutex::new(config),
     };
 
     let connection = connection::Builder::session()?
@@ -622,5 +738,97 @@ mod tests {
         let config = config_com_idiomas("pt", "pt");
 
         assert_eq!(instrucao_llm(&config, false, false), None);
+    }
+
+    #[test]
+    fn nao_precisa_reiniciar_quando_config_e_identica() {
+        let config = config::Config::default();
+        assert!(!precisa_reiniciar(&config, &config));
+    }
+
+    #[test]
+    fn precisa_reiniciar_quando_engine_muda() {
+        let atual = config::Config::default();
+        let novo = config::Config {
+            engine: EngineEscolhido::Cloud,
+            ..config::Config::default()
+        };
+        assert!(precisa_reiniciar(&atual, &novo));
+    }
+
+    #[test]
+    fn precisa_reiniciar_quando_modelo_local_muda() {
+        let atual = config::Config::default();
+        let novo = config::Config {
+            modelo_local: "large".to_string(),
+            ..config::Config::default()
+        };
+        assert!(precisa_reiniciar(&atual, &novo));
+    }
+
+    #[test]
+    fn nao_precisa_reiniciar_quando_so_campos_quentes_mudam() {
+        let atual = config::Config::default();
+        let novo = config::Config {
+            idioma_saida: "en".to_string(),
+            vocabulario: vec!["EverVox".to_string()],
+            limpeza: config::ConfigLimpeza {
+                habilitada: true,
+                ..config::ConfigLimpeza::default()
+            },
+            ..config::Config::default()
+        };
+        assert!(!precisa_reiniciar(&atual, &novo));
+    }
+
+    #[test]
+    fn aplicar_campos_quentes_copia_idiomas_terminais_e_vocabulario() {
+        let mut atual = config::Config::default();
+        let novo = config::Config {
+            idioma_entrada: "en".to_string(),
+            idioma_saida: "es".to_string(),
+            terminais_conhecidos: vec!["meu-terminal".to_string()],
+            vocabulario: vec!["EverVox".to_string()],
+            ..config::Config::default()
+        };
+
+        aplicar_campos_quentes(&mut atual, &novo);
+
+        assert_eq!(atual.idioma_entrada, "en");
+        assert_eq!(atual.idioma_saida, "es");
+        assert_eq!(atual.terminais_conhecidos, vec!["meu-terminal".to_string()]);
+        assert_eq!(atual.vocabulario, vec!["EverVox".to_string()]);
+    }
+
+    #[test]
+    fn aplicar_campos_quentes_nunca_toca_a_limpeza() {
+        let mut atual = config::Config::default();
+        let novo = config::Config {
+            limpeza: config::ConfigLimpeza {
+                habilitada: true,
+                provedor: ProvedorLimpezaEscolhido::Anthropic,
+                ..config::ConfigLimpeza::default()
+            },
+            ..config::Config::default()
+        };
+
+        aplicar_campos_quentes(&mut atual, &novo);
+
+        assert_eq!(atual.limpeza, config::ConfigLimpeza::default());
+    }
+
+    #[test]
+    fn aplicar_campos_quentes_nunca_toca_engine_nem_modelo_local() {
+        let mut atual = config::Config::default();
+        let novo = config::Config {
+            engine: EngineEscolhido::Cloud,
+            modelo_local: "large".to_string(),
+            ..config::Config::default()
+        };
+
+        aplicar_campos_quentes(&mut atual, &novo);
+
+        assert_eq!(atual.engine, EngineEscolhido::Local);
+        assert_eq!(atual.modelo_local, "base");
     }
 }

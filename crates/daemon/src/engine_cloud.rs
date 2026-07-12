@@ -99,6 +99,14 @@ impl EngineSTT for EngineCloud {
             .map_err(|erro| ErroEngine(format!("resposta inesperada da API da OpenAI: {erro}")))?;
         Ok(corpo.text)
     }
+
+    /// Atualiza o Idioma de entrada e o hint de Vocabulário sem reconstruir o
+    /// cliente HTTP (ver `crate::main::recarregar_config`): campo quente, ao
+    /// contrário de trocar de Engine (que exige restart, ver `CONTEXT.md`).
+    fn atualizar_hint(&mut self, idioma: &str, vocabulario: &[String]) {
+        self.idioma = idioma.to_string();
+        self.prompt_vocabulario = vocabulario.join(", ");
+    }
 }
 
 #[cfg(test)]
@@ -236,5 +244,21 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap();
         assert!(!requisicao.contains("name=\"prompt\""));
+    }
+
+    #[test]
+    fn atualizar_hint_troca_idioma_e_vocabulario_sem_reconstruir_o_engine() {
+        let (url, requisicoes) =
+            servidor_mock_capturando(resposta_http("200 OK", r#"{"text":"oi mundo"}"#));
+        let mut engine = EngineCloud::com_url(url, "chave-de-teste".to_string(), "pt", &[]);
+
+        engine.atualizar_hint("en", &["EverVox".to_string()]);
+        engine.transcrever(&audio_de_teste()).unwrap();
+
+        let requisicao = requisicoes
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(requisicao.contains("name=\"language\"\r\n\r\nen"));
+        assert!(requisicao.contains("EverVox"));
     }
 }
