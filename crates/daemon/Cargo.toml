@@ -2,7 +2,9 @@
 name = "evervox-daemon"
 version = "0.1.0"
 edition = "2021"
-description = "Serviço de ditado por voz para Ubuntu (GNOME/Wayland)"
+# Sem palavras acentuadas de propósito: a Central de Aplicativos (PackageKit)
+# converte a descrição de .deb local para ASCII e troca acentos por "?".
+description = "Ditado por voz para Ubuntu (GNOME/Wayland)"
 license = "MIT"
 repository = "https://github.com/IgorGuariroba/EverVox"
 
@@ -33,12 +35,17 @@ uinput = { workspace = true }
 name = "evervox"
 maintainer = "Igor R. Guariroba <1g0r.guari@gmail.com>"
 copyright = "2026, Igor R. Guariroba"
+# Idem: texto escolhido para dispensar acentos, sem grafia errada.
 extended-description = """\
-Ditado por voz para Ubuntu com GNOME Shell em Wayland: um atalho de teclado
-captura a fala em qualquer app, transcreve (whisper.cpp local ou OpenAI),
-limpa o texto via LLM (opcional) e entrega ao campo de texto focado.
-Depois de instalar, cada usuário roda 'evervox-pos-instalar' na sessão
-gráfica para concluir a configuração."""
+Ditado por voz livre e focado em privacidade para Ubuntu com GNOME Shell
+em Wayland. Um atalho de teclado captura a fala em qualquer app; o EverVox
+transcreve tudo no seu computador (whisper.cpp), sem enviar nada para a
+nuvem, e entrega o texto ao campo focado. Engine cloud (OpenAI), limpeza
+por LLM (OpenAI/Anthropic) e troca de idioma entre fala e texto existem
+como recursos opcionais.
+Depois de instalar, rode 'evervox-pos-instalar' para concluir os passos
+que dependem do seu login: grupo input, daemon, overlay e atalho de
+teclado."""
 section = "sound"
 priority = "optional"
 depends = "$auto"

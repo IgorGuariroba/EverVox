@@ -15,10 +15,18 @@
   </developer>
   <description>
     <p>
-      Serviço de ditado por voz para Ubuntu com GNOME Shell em Wayland: um
-      atalho de teclado captura a fala em qualquer app, transcreve
-      (whisper.cpp local ou OpenAI), limpa o texto via LLM (opcional) e
-      entrega ao campo de texto focado.
+      Ditado por voz livre e focado em privacidade para Ubuntu com GNOME
+      Shell em Wayland: um atalho de teclado captura a fala em qualquer app
+      e o texto transcrito é entregue no campo focado. Por padrão a
+      transcrição roda 100% na sua máquina (whisper.cpp) — nenhum áudio sai
+      do computador.
+    </p>
+    <p>
+      Recursos opcionais: transcrição via nuvem (OpenAI), limpeza do texto
+      por LLM (OpenAI/Anthropic) — remove hesitações e corrige pontuação —
+      e tradução automática quando o idioma de saída difere do idioma
+      falado. As chaves de API ficam guardadas no GNOME Keyring, nunca em
+      arquivos de configuração.
     </p>
     <p>
       Depois de instalar, rode "evervox-pos-instalar" na sessão gráfica para
