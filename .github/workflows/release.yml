@@ -1,26 +1,36 @@
 name: Release
 
-# Publica o pacote .deb automaticamente quando a versão do crate muda na
-# main: cada push compara `v<versão>` (crates/daemon/Cargo.toml) com as
-# tags existentes e, se for inédita, gera o pacote via
-# scripts/empacotar-deb.sh e cria o release com o .deb anexado e notas
-# geradas dos PRs — o próprio `gh release create` cria a tag no commit,
-# num único workflow (tag empurrada com GITHUB_TOKEN não dispararia um
-# workflow de release separado, por design do GitHub Actions).
+# Publica o pacote .deb automaticamente a cada push na main: se a versão
+# dos Cargo.toml já tem tag, o workflow calcula o próximo patch sozinho a
+# partir da última tag `v*`, alinha a versão dos crates só no runner (para
+# o .deb e os binários saírem com a versão certa) e cria o release com o
+# `gh release create` — que também cria a tag no commit, num único
+# workflow (tag empurrada com GITHUB_TOKEN não dispararia um workflow de
+# release separado, por design do GitHub Actions).
 #
-# Fluxo de release: suba a versão nos Cargo.toml dos crates num PR; o
-# merge na main cuida do resto (tag, .deb e release).
+# O bump manual continua valendo para saltos de minor/major: suba a versão
+# nos Cargo.toml dos crates num PR e o merge publica exatamente essa
+# versão. O commit de bump automático nunca é empurrado para a main — o
+# ruleset protect-main exige PR para tudo — então a versão dos Cargo.toml
+# no repositório pode ficar atrás das tags; as tags são a fonte da verdade.
 on:
   push:
     branches: [main]
   # Válvula de escape enquanto o auto-merge usa o GITHUB_TOKEN: o merge
   # feito pelo bot não gera evento de push que dispare workflows, então o
   # release pode ser acionado à mão (gh workflow run Release) — a checagem
-  # de versão inédita vale igual.
+  # de commit já publicado vale igual.
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# Merges em sequência disparam runs em série (não em paralelo): cada run
+# recalcula a próxima versão vendo as tags que o run anterior criou, sem
+# dois runs disputarem a mesma tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,23 +42,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Decidir se há versão nova para publicar
+      - name: Decidir a versão a publicar
         id: versao
         run: |
-          versao="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/daemon/Cargo.toml | head -1)"
-          if [ -z "$versao" ]; then
+          versao_cargo="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/daemon/Cargo.toml | head -1)"
+          if [ -z "$versao_cargo" ]; then
             echo "erro: não achei a versão em crates/daemon/Cargo.toml." >&2
             exit 1
           fi
-          tag="v$versao"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "Tag $tag já existe — nada a publicar."
-            echo "publicar=false" >>"$GITHUB_OUTPUT"
+
+          if ! git ls-remote --exit-code --tags origin "refs/tags/v$versao_cargo" >/dev/null; then
+            # Bump manual nos Cargo.toml: publica exatamente essa versão.
+            versao="$versao_cargo"
+            echo "Versão inédita nos Cargo.toml (v$versao): publicando release."
           else
-            echo "Versão nova ($tag): publicando release."
-            echo "publicar=true" >>"$GITHUB_OUTPUT"
+            ultima="$(git ls-remote --tags origin 'refs/tags/v*' \
+              | awk -F'refs/tags/' '{print $2}' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V | tail -1)"
+            # `^{}` resolve tag anotada para o commit; tag leve não tem
+            # essa ref, daí o fallback para a própria tag.
+            sha_ultima="$(git ls-remote origin "refs/tags/$ultima^{}" | cut -f1)"
+            [ -n "$sha_ultima" ] || sha_ultima="$(git ls-remote origin "refs/tags/$ultima" | cut -f1)"
+            if [ "$sha_ultima" = "$GITHUB_SHA" ]; then
+              echo "HEAD já é o commit do release $ultima — nada a publicar."
+              echo "publicar=false" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            IFS=. read -r maj min pat <<<"${ultima#v}"
+            versao="$maj.$min.$((pat + 1))"
+            echo "Bump automático de patch: $ultima -> v$versao."
           fi
-          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+
+          {
+            echo "publicar=true"
+            echo "versao=$versao"
+            echo "versao_cargo=$versao_cargo"
+            echo "tag=v$versao"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Alinhar a versão dos crates com a tag (só no runner)
+        if: steps.versao.outputs.publicar == 'true' && steps.versao.outputs.versao != steps.versao.outputs.versao_cargo
+        run: |
+          # O Cargo.lock é atualizado pelo próprio `cargo build` do
+          # empacotamento (o script não usa --locked).
+          for manifesto in crates/cli/Cargo.toml crates/core/Cargo.toml crates/daemon/Cargo.toml crates/segredo/Cargo.toml; do
+            sed -i 's/^version = "${{ steps.versao.outputs.versao_cargo }}"$/version = "${{ steps.versao.outputs.versao }}"/' "$manifesto"
+            grep -q '^version = "${{ steps.versao.outputs.versao }}"$' "$manifesto" || {
+              echo "erro: não consegui alinhar a versão em $manifesto." >&2
+              exit 1
+            }
+          done
 
       - name: Instalar dependências de sistema (ALSA para cpal; cmake/clang para whisper-rs)
         if: steps.versao.outputs.publicar == 'true'

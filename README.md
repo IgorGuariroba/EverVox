@@ -162,12 +162,15 @@ Push direto para `main` é bloqueado; todo merge entra por PR com o check
 
 ### Release
 
-Para publicar uma versão nova, suba a versão nos `Cargo.toml` dos crates
-num PR e mescle: o merge na `main` dispara o workflow `Release`, que cria
-a tag `v<versão>`, gera o `.deb` e publica o release do GitHub com o
-pacote anexado — nenhum passo manual. Se o workflow não disparar (ex.:
-merge feito por bot), acione-o à mão com `gh workflow run Release`; a
-checagem de versão inédita evita release duplicado.
+Todo merge na `main` publica um release novo: o workflow `Release`
+calcula o próximo patch a partir da última tag `v*`, alinha a versão dos
+crates no runner, gera o `.deb` e publica o release do GitHub com o
+pacote anexado — nenhum passo manual, e as tags são a fonte da verdade
+da versão. Para um salto de minor/major, suba a versão nos `Cargo.toml`
+dos quatro crates num PR: o merge publica exatamente essa versão. Se o
+workflow não disparar (ex.: merge feito por bot), acione-o à mão com
+`gh workflow run Release`; a checagem de commit já publicado evita
+release duplicado.
 
 ### Teste E2E headless
 
