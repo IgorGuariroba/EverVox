@@ -98,6 +98,11 @@ export default class EverVoxExtension extends Extension {
      * Cria o indicador flutuante do Overlay, escondido até o primeiro sinal
      * de estado chegar. `affectsInputRegion: false` garante que ele nunca
      * rouba foco nem intercepta cliques — é puramente informativo.
+     *
+     * Sem `trackFullscreen`: com ele, o Shell assume o controle de `visible`
+     * e força o Overlay a aparecer (vazio, um quadrado escuro) a cada
+     * transição de fullscreen — inclusive logo após o login. A visibilidade
+     * é responsabilidade exclusiva de `_refletirEstado`.
      */
     _criarOverlay() {
         const overlay = new St.Label({
@@ -109,7 +114,6 @@ export default class EverVoxExtension extends Extension {
         });
         Main.layoutManager.addChrome(overlay, {
             affectsInputRegion: false,
-            trackFullscreen: true,
         });
         overlay.connect('notify::width', () => this._posicionar(overlay));
         return overlay;
