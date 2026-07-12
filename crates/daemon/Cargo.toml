@@ -1,6 +1,6 @@
 [package]
 name = "evervox-daemon"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # Sem palavras acentuadas de propósito: a Central de Aplicativos (PackageKit)
 # converte a descrição de .deb local para ASCII e troca acentos por "?".
