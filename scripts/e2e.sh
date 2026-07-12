@@ -132,9 +132,22 @@ mic_virtual_visivel() {
 
 criar_mic_virtual() {
     log "Criando microfone virtual (null sink → monitor source)..."
-    pactl load-module module-null-sink \
-        sink_name=evervox_mic \
-        sink_properties=device.description=EverVox_E2E_Mic >/dev/null
+    # Logo após subir, o pipewire-pulse já responde ao `pactl info` mas pode
+    # recusar load-module com "Failure: Not supported" enquanto o WirePlumber
+    # não terminou de ativar o core — flake observado no CI. Reintentar com
+    # pausa cobre essa janela.
+    local tentativa
+    for tentativa in 1 2 3 4 5; do
+        if pactl load-module module-null-sink \
+            sink_name=evervox_mic \
+            sink_properties=device.description=EverVox_E2E_Mic >/dev/null 2>&1; then
+            break
+        fi
+        [ "$tentativa" -lt 5 ] ||
+            falha "load-module module-null-sink recusado após 5 tentativas"
+        aviso "load-module recusado (tentativa $tentativa/5), aguardando 2s..."
+        sleep 2
+    done
     esperar_condicao 5 mic_virtual_visivel ||
         falha "sink 'evervox_mic' não apareceu em 'pactl list sinks short'"
 
