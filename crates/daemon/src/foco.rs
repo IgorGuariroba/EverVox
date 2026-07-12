@@ -22,6 +22,13 @@ impl FocoGnome {
         }
     }
 
+    /// Substitui a lista de terminais conhecidos (ver
+    /// `crate::main::aplicar_campos_quentes`): campo quente das Preferências,
+    /// aplicado sem reiniciar o Daemon.
+    pub fn atualizar_terminais(&mut self, terminais_conhecidos: Vec<String>) {
+        self.terminais_conhecidos = terminais_conhecidos;
+    }
+
     fn consultar_app_focado(&self) -> Option<String> {
         let connection = self.connection.as_ref()?;
         let reply = connection
@@ -99,5 +106,25 @@ mod tests {
     #[test]
     fn app_focado_indisponivel_degrada_para_atalho_padrao() {
         assert_eq!(decidir_atalho(None, &terminais()), Atalho::Padrao);
+    }
+
+    #[test]
+    fn atualizar_terminais_substitui_a_lista_usada_na_decisao() {
+        let mut foco = FocoGnome::nova(terminais());
+        assert_eq!(
+            decidir_atalho(Some("firefox"), &foco.terminais_conhecidos),
+            Atalho::Padrao
+        );
+
+        foco.atualizar_terminais(vec!["firefox".to_string()]);
+
+        assert_eq!(
+            decidir_atalho(Some("firefox"), &foco.terminais_conhecidos),
+            Atalho::Terminal
+        );
+        assert_eq!(
+            decidir_atalho(Some("gnome-terminal-server"), &foco.terminais_conhecidos),
+            Atalho::Padrao
+        );
     }
 }

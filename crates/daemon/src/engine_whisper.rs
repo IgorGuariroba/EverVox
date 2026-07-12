@@ -79,6 +79,15 @@ impl EngineSTT for EngineWhisper {
 
         Ok(texto)
     }
+
+    /// Atualiza o Idioma de entrada e o hint de Vocabulário sem recarregar o
+    /// modelo (ver `crate::main::recarregar_config`): campo quente, ao
+    /// contrário de trocar de Engine ou de modelo local, cujo custo é
+    /// justamente recarregar o whisper.cpp em memória.
+    fn atualizar_hint(&mut self, idioma: &str, vocabulario: &[String]) {
+        self.idioma = idioma.to_string();
+        self.prompt_vocabulario = vocabulario.join(", ");
+    }
 }
 
 /// Converte amostras `i16` (o formato do núcleo) para `f32` normalizado em

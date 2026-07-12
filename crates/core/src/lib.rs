@@ -157,6 +157,13 @@ pub trait FonteDeAudio {
 /// testes usam um fake.
 pub trait EngineSTT: Send {
     fn transcrever(&mut self, audio: &AudioGravado) -> Result<String, ErroEngine>;
+
+    /// Atualiza o hint de Idioma de entrada/Vocabulário sem reconstruir o
+    /// Engine (ver `crate::daemon::recarregar_config`, no Daemon): campo
+    /// quente das Preferências, diferente de trocar de Engine ou de modelo
+    /// (que exige restart, ver `CONTEXT.md`). No-op por padrão — usado por
+    /// implementações sem hint algum (ex.: fakes de teste).
+    fn atualizar_hint(&mut self, _idioma: &str, _vocabulario: &[String]) {}
 }
 
 /// Permite ao Daemon escolher o Engine (local ou cloud) em tempo de
@@ -165,6 +172,10 @@ pub trait EngineSTT: Send {
 impl EngineSTT for Box<dyn EngineSTT> {
     fn transcrever(&mut self, audio: &AudioGravado) -> Result<String, ErroEngine> {
         (**self).transcrever(audio)
+    }
+
+    fn atualizar_hint(&mut self, idioma: &str, vocabulario: &[String]) {
+        (**self).atualizar_hint(idioma, vocabulario)
     }
 }
 
@@ -358,6 +369,29 @@ where
 
     pub fn state(&self) -> DitadoState {
         self.state
+    }
+
+    /// Substitui a Limpeza em uso (ver `crate::daemon::recarregar_config`, no
+    /// Daemon): permite trocar provedor/modelo/instruções sem reiniciar o
+    /// processo, já que reconstruir esse cliente é barato (diferente do
+    /// Engine STT, cujo custo de reinício é o carregamento do modelo).
+    pub fn substituir_limpeza(&mut self, limpeza: L, limpeza_config: LimpezaExecucao) {
+        *self.limpeza.lock().unwrap() = limpeza;
+        self.limpeza_config = limpeza_config;
+    }
+
+    /// Devolve o mesmo `Arc` do Foco usado internamente, para o Daemon
+    /// aplicar mudanças quentes (ex.: nova lista de terminais conhecidos)
+    /// sem reconstruir a `Machine` inteira.
+    pub fn foco(&self) -> Arc<Mutex<O>> {
+        Arc::clone(&self.foco)
+    }
+
+    /// Devolve o mesmo `Arc` do Engine usado internamente, para o Daemon
+    /// aplicar o hint quente de Idioma de entrada/Vocabulário (ver
+    /// [`EngineSTT::atualizar_hint`]) sem reconstruir a `Machine` inteira.
+    pub fn engine(&self) -> Arc<Mutex<E>> {
+        Arc::clone(&self.engine)
     }
 
     /// Aciona o Toggle: Ocioso -> Gravando ou Gravando -> Ocioso.
@@ -598,29 +632,47 @@ mod tests {
         fn encerrar(&mut self) {}
     }
 
-    /// Engine fake que retorna uma transcrição fixa (ou uma falha) de imediato.
+    /// Hint de Idioma de entrada/Vocabulário recebido por
+    /// [`EngineSTT::atualizar_hint`], registrado por [`FakeEngine`].
+    type HintRegistrado = Arc<Mutex<Option<(String, Vec<String>)>>>;
+
+    /// Engine fake que retorna uma transcrição fixa (ou uma falha) de
+    /// imediato, e registra o último hint recebido via
+    /// [`EngineSTT::atualizar_hint`] — usado para provar que
+    /// [`Machine::engine`] devolve o mesmo `Arc` usado internamente.
     #[derive(Clone)]
     struct FakeEngine {
         resultado: Result<String, ErroEngine>,
+        ultimo_hint: HintRegistrado,
     }
 
     impl FakeEngine {
         fn sucesso(texto: &str) -> Self {
             Self {
                 resultado: Ok(texto.to_string()),
+                ultimo_hint: Arc::new(Mutex::new(None)),
             }
         }
 
         fn falha(mensagem: &str) -> Self {
             Self {
                 resultado: Err(ErroEngine(mensagem.to_string())),
+                ultimo_hint: Arc::new(Mutex::new(None)),
             }
+        }
+
+        fn ultimo_hint(&self) -> Option<(String, Vec<String>)> {
+            self.ultimo_hint.lock().unwrap().clone()
         }
     }
 
     impl EngineSTT for FakeEngine {
         fn transcrever(&mut self, _audio: &AudioGravado) -> Result<String, ErroEngine> {
             self.resultado.clone()
+        }
+
+        fn atualizar_hint(&mut self, idioma: &str, vocabulario: &[String]) {
+            *self.ultimo_hint.lock().unwrap() = Some((idioma.to_string(), vocabulario.to_vec()));
         }
     }
 
@@ -1474,5 +1526,76 @@ mod tests {
                 Event::Concluiu("oi mundo".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn substituir_limpeza_troca_a_limpeza_usada_no_proximo_ditado() {
+        let entrega = FakeEntrega::default();
+        let limpeza_antiga = FakeLimpeza::sucesso("antiga");
+        let limpeza_nova = FakeLimpeza::sucesso("nova");
+        let mut machine = nova_machine_com_limpeza(
+            FakeEngine::sucesso("oi mundo"),
+            limpeza_antiga.clone(),
+            config_limpeza_habilitada(),
+            entrega.clone(),
+            FakeFeedback::default(),
+        );
+
+        machine.substituir_limpeza(limpeza_nova.clone(), config_limpeza_habilitada());
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert_eq!(limpeza_antiga.contagem_de_chamadas(), 0);
+        assert_eq!(limpeza_nova.contagem_de_chamadas(), 1);
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Copiou("nova".to_string())));
+    }
+
+    #[test]
+    fn engine_devolve_o_arc_interno_e_permite_atualizar_o_hint_sem_reconstruir() {
+        let entrega = FakeEntrega::default();
+        let engine = FakeEngine::sucesso("oi mundo");
+        let machine = nova_machine(
+            FakeFonteDeAudio::default(),
+            engine.clone(),
+            entrega,
+            FakeFeedback::default(),
+        );
+
+        machine
+            .engine()
+            .lock()
+            .unwrap()
+            .atualizar_hint("en", &["EverVox".to_string()]);
+
+        assert_eq!(
+            engine.ultimo_hint(),
+            Some(("en".to_string(), vec!["EverVox".to_string()]))
+        );
+    }
+
+    #[test]
+    fn foco_devolve_o_arc_interno_e_mudancas_refletem_no_proximo_ditado() {
+        let entrega = FakeEntrega::default();
+        let mut machine = nova_machine_com_foco(
+            FakeFonteDeAudio::default(),
+            FakeEngine::sucesso("oi mundo"),
+            entrega.clone(),
+            FakeFeedback::default(),
+            FakeFoco::nao_terminal(),
+        );
+
+        machine.foco().lock().unwrap().atalho = Atalho::Terminal;
+
+        machine.toggle().unwrap();
+        machine.toggle().unwrap();
+        machine.aguardar_processamentos();
+
+        assert!(entrega
+            .eventos()
+            .contains(&EntregaEvento::Colou(Atalho::Terminal)));
     }
 }
