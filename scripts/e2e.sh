@@ -1,149 +1,156 @@
 #!/usr/bin/env bash
-# E2E: pipeline de Ditado ponta a ponta em ambiente headless.
+# E2E: pipeline de Ditado ponta a ponta em ambiente headless (issue #24).
 #
-# Sobe um ambiente mínimo (D-Bus session, PipeWire + WirePlumber, Weston
-# headless), builda o projeto, inicia o Daemon com Engine local (whisper.cpp
-# modelo base), gera áudio de fala sintetizada, simula um Ditado completo e
-# confere que a Transcrição chegou ao clipboard.
+# Três estágios, na linguagem da issue:
+#   1. Sinais de estado (D-Bus) — obrigatório: qualquer falha aqui derruba o
+#      teste. Sobe um barramento de sessão isolado, um PipeWire próprio com
+#      microfone virtual, o Daemon real (Engine local, whisper base), executa
+#      um Ditado com fala sintetizada e confere a sequência
+#      Estado(gravando) → Estado(processando) → Estado(ocioso).
+#   2. Entrega (clipboard) — degradável: precisa do Weston headless; sem ele
+#      o estágio é pulado com aviso claro e o teste segue valendo pelo 1.
+#   3. Colar simulado (uinput) — degradável: precisa de /dev/uinput gravável
+#      e leitura de /dev/input/event*; sem isso é pulado com aviso claro.
 #
 # Pré-requisitos de pacote (Ubuntu):
-#   pipewire wireplumber pipewire-pulse weston wl-clipboard dbus-daemon
-#   libespeak-ng1 python3 curl cmake libclang-dev pkg-config libasound2-dev
+#   pipewire wireplumber pipewire-pulse pulseaudio-utils wl-clipboard
+#   dbus-daemon libespeak-ng1 python3 curl
+#   weston            (estágio 2; opcional — degrada se ausente)
+#   acesso a uinput   (estágio 3; opcional — degrada se ausente)
 #
 # Uso:
-#   ./scripts/e2e.sh                  # usa ./target/release/
-#   EVERVOX_BIN_DIR=./bin ./scripts/e2e.sh  # binários em outro lugar
+#   ./scripts/e2e.sh
 #
 # Variáveis de ambiente:
 #   EVERVOX_BIN_DIR        diretório com evervox e evervox-daemon
-#                          (default: ./target/release)
+#                          (default: ./target/release; builda se ausentes)
 #   EVERVOX_MODELO_CACHE   diretório com ggml-base.bin pré-baixado
 #                          (default: ~/.cache/evervox-e2e)
-#   EVERVOX_TIMEOUT_DAEMON segundos para esperar o Daemon subir (default: 60)
-#   EVERVOX_TIMEOUT_DITADO segundos para esperar o Ditado processar (default: 30)
+#   EVERVOX_TIMEOUT_DAEMON segundos para o Daemon subir (default: 60)
+#   EVERVOX_TIMEOUT_DITADO segundos para o Ditado processar (default: 30)
 set -euo pipefail
 
-# ── helpers ────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+log()   { echo "==> $*"; }
+aviso() { echo "AVISO: $*" >&2; }
+falha() { echo "FALHA: $*" >&2; exit 1; }
 
-passo()  { echo -e "${GREEN}==>${NC} $*"; }
-falha()  { echo -e "${RED}FALHA:${NC} $*" >&2; exit 1; }
-aviso()  { echo -e "${YELLOW}AVISO:${NC} $*" >&2; }
-esperar_arquivo() {
-    local arquivo="$1" timeout="${2:-10}" msg="${3:-}"
-    for _ in $(seq 1 "$timeout"); do
-        if [ -e "$arquivo" ]; then return 0; fi
+# ── limpeza ──────────────────────────────────────────────────────────────────
+# Todo processo em segundo plano entra em PIDS_LIMPEZA na ordem em que sobe;
+# o trap os derruba na ordem inversa (Daemon antes do PipeWire, PipeWire
+# antes do D-Bus) mesmo quando uma `falha` no meio do roteiro dá exit 1 —
+# sem isso, um E2E que falha cedo deixaria dbus/pipewire/weston órfãos
+# pendurando o job do CI.
+PIDS_LIMPEZA=()
+DIR_TMP="$(mktemp -d)"
+
+limpar() {
+    local i
+    for ((i = ${#PIDS_LIMPEZA[@]} - 1; i >= 0; i--)); do
+        kill "${PIDS_LIMPEZA[i]}" 2>/dev/null || true
+    done
+    for ((i = ${#PIDS_LIMPEZA[@]} - 1; i >= 0; i--)); do
+        wait "${PIDS_LIMPEZA[i]}" 2>/dev/null || true
+    done
+    rm -rf "$DIR_TMP"
+}
+trap limpar EXIT
+
+# ── helpers de espera ────────────────────────────────────────────────────────
+# Espera até `timeout` segundos pela condição (os argumentos restantes,
+# executados como comando). Retorna 1 se o tempo estourar — quem chama
+# decide se isso é `falha` ou degradação.
+esperar_condicao() {
+    local timeout="$1"
+    shift
+    local i
+    for i in $(seq 1 "$timeout"); do
+        if "$@"; then return 0; fi
         sleep 1
     done
-    falha "timeout esperando ${msg:-$arquivo} ($timeout s)"
+    return 1
 }
 
-# ── ambiente isolado ───────────────────────────────────────────────────────
+# ── configuração ─────────────────────────────────────────────────────────────
 DIR_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="${EVERVOX_BIN_DIR:-$DIR_REPO/target/release}"
 MODELO_CACHE="${EVERVOX_MODELO_CACHE:-$HOME/.cache/evervox-e2e}"
 TIMEOUT_DAEMON="${EVERVOX_TIMEOUT_DAEMON:-60}"
 TIMEOUT_DITADO="${EVERVOX_TIMEOUT_DITADO:-30}"
 
-DIR_TMP="$(mktemp -d)"
-trap 'rm -rf "$DIR_TMP"' EXIT
-
 export XDG_RUNTIME_DIR="${DIR_TMP}/runtime"
 export XDG_CONFIG_HOME="${DIR_TMP}/config"
 export XDG_DATA_HOME="${DIR_TMP}/data"
 export XDG_CACHE_HOME="${DIR_TMP}/cache"
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+# O D-Bus exige runtime dir acessível só pelo dono (o default do umask deixa
+# o grupo escrever e o dbus-daemon reclama).
+chmod 700 "$XDG_RUNTIME_DIR"
 
-# ── 1. D-Bus session bus ───────────────────────────────────────────────────
-passo "Iniciando D-Bus session bus..."
-DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-export DBUS_SESSION_BUS_ADDRESS
+ERROS=0
+ESTAGIO2_OK=0
+ESTAGIO3_OK=0
 
-dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &
-DBUS_PID=$!
-esperar_arquivo "${XDG_RUNTIME_DIR}/bus" 5 "socket do D-Bus"
+# ── infraestrutura do estágio 1 (obrigatória) ────────────────────────────────
 
-# ── 2. PipeWire + WirePlumber ──────────────────────────────────────────────
-passo "Iniciando PipeWire..."
-pipewire &
-PIPEWIRE_PID=$!
-sleep 1
+subir_dbus() {
+    log "Iniciando D-Bus session bus isolado..."
+    DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+    export DBUS_SESSION_BUS_ADDRESS
+    dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &
+    PIDS_LIMPEZA+=($!)
+    esperar_condicao 5 test -S "${XDG_RUNTIME_DIR}/bus" ||
+        falha "socket do D-Bus não apareceu em ${XDG_RUNTIME_DIR}/bus"
+}
 
-pipewire-pulse &
-PIPEWIRE_PULSE_PID=$!
-sleep 1
+pipewire_pronto() {
+    pactl info >/dev/null 2>&1
+}
 
-wireplumber &
-WIREPLUMBER_PID=$!
-sleep 2
+subir_pipewire() {
+    log "Iniciando PipeWire + WirePlumber isolados..."
+    pipewire &
+    PIDS_LIMPEZA+=($!)
+    pipewire-pulse &
+    PIDS_LIMPEZA+=($!)
+    wireplumber &
+    PIDS_LIMPEZA+=($!)
+    esperar_condicao 10 pipewire_pronto ||
+        falha "PipeWire não respondeu via pactl em 10s"
+}
 
-# ── 3. Microfone virtual (null sink → monitor source) ──────────────────────
-passo "Criando microfone virtual..."
-pactl load-module module-null-sink \
-    sink_name=evervox_mic \
-    sink_properties=device.description=EverVox_E2E_Mic
+mic_virtual_visivel() {
+    pactl list sinks short 2>/dev/null | grep -q evervox_mic
+}
 
-# Dá tempo para o WirePlumber expor o sink e o monitor source no grafo do
-# PipeWire antes de consultá-los.
-sleep 1
+criar_mic_virtual() {
+    log "Criando microfone virtual (null sink → monitor source)..."
+    pactl load-module module-null-sink \
+        sink_name=evervox_mic \
+        sink_properties=device.description=EverVox_E2E_Mic >/dev/null
+    esperar_condicao 5 mic_virtual_visivel ||
+        falha "sink 'evervox_mic' não apareceu em 'pactl list sinks short'"
 
-# O monitor source do null sink é o que o Daemon vai capturar como "microfone".
-# Tudo que for tocado no sink evervox_mic aparece nesse source.
-# Usamos `pactl list sinks short` (formato: índice\tnome\tdriver\testado).
-# O grep pode falhar se o sink ainda não apareceu — por isso || true e
-# verificação explícita depois (não depende de pipefail).
-SINK_NOME=$(pactl list sinks short 2>/dev/null | { grep evervox_mic || true; } | awk '{print $2}')
-if [ -z "$SINK_NOME" ]; then
-    falha "Sink 'evervox_mic' não encontrado em 'pactl list sinks short'"
-fi
+    # Tudo que for tocado no sink evervox_mic aparece no monitor source; com
+    # ele como default, o Daemon o captura como se fosse o microfone real.
+    esperar_condicao 5 bash -c "pactl list sources short 2>/dev/null | grep -q 'evervox_mic.monitor'" ||
+        falha "monitor source 'evervox_mic.monitor' não apareceu"
+    pactl set-default-source evervox_mic.monitor
+    log "Microfone virtual pronto (source default: evervox_mic.monitor)"
+}
 
-# O monitor source aparece com nome "<sink_name>.monitor" no PipeWire.
-MONITOR_SOURCE="${SINK_NOME}.monitor"
-# Confirma que o monitor source existe antes de setar como default.
-if ! pactl list sources short 2>/dev/null | grep -q "${MONITOR_SOURCE}"; then
-    falha "Monitor source '${MONITOR_SOURCE}' não encontrado"
-fi
-
-pactl set-default-source "$MONITOR_SOURCE"
-passo "Microfone virtual: sink=$SINK_NOME, source=$MONITOR_SOURCE (default)"
-
-# ── 4. Weston headless (wl-copy/wl-paste precisam de compositor) ───────────
-passo "Iniciando Weston headless..."
-weston --backend=headless-backend.so --socket=wayland-0 &
-WESTON_PID=$!
-sleep 2
-
-# O socket do Weston pode estar em XDG_RUNTIME_DIR ou em um subdiretório
-if [ -S "${XDG_RUNTIME_DIR}/wayland-0" ]; then
-    export WAYLAND_DISPLAY=wayland-0
-elif [ -S "${XDG_RUNTIME_DIR}/wayland-1" ]; then
-    export WAYLAND_DISPLAY=wayland-1
-else
-    # Weston pode ter criado o socket em outro lugar; procuramos
-    WAYLAND_SOCKET="$(find "$XDG_RUNTIME_DIR" -name 'wayland-*' -type s 2>/dev/null | head -1)"
-    if [ -n "$WAYLAND_SOCKET" ]; then
-        export WAYLAND_DISPLAY="$(basename "$WAYLAND_SOCKET")"
+garantir_binarios() {
+    if [ -x "$BIN_DIR/evervox" ] && [ -x "$BIN_DIR/evervox-daemon" ]; then
+        log "Binários já existem em $BIN_DIR, pulando build."
     else
-        falha "Weston não criou socket wayland em $XDG_RUNTIME_DIR"
+        log "Compilando binários (release)..."
+        (cd "$DIR_REPO" && cargo build --release --bin evervox --bin evervox-daemon)
     fi
-fi
-passo "Wayland display: $WAYLAND_DISPLAY"
+}
 
-# ── 5. Build ───────────────────────────────────────────────────────────────
-if [ -x "$BIN_DIR/evervox" ] && [ -x "$BIN_DIR/evervox-daemon" ]; then
-    passo "Binários já existem em $BIN_DIR, pulando build."
-else
-    passo "Compilando binários (release)..."
-    (cd "$DIR_REPO" && cargo build --release --bin evervox --bin evervox-daemon)
-fi
-
-# ── 6. Config do Daemon ────────────────────────────────────────────────────
-passo "Criando config.toml..."
-mkdir -p "$XDG_CONFIG_HOME/evervox"
-cat > "$XDG_CONFIG_HOME/evervox/config.toml" <<'EOF'
+preparar_config() {
+    log "Criando config.toml (Engine local, Limpeza desligada)..."
+    mkdir -p "$XDG_CONFIG_HOME/evervox"
+    cat >"$XDG_CONFIG_HOME/evervox/config.toml" <<'EOF'
 idioma = "pt"
 modelo_local = "base"
 engine = "local"
@@ -151,180 +158,219 @@ engine = "local"
 [limpeza]
 habilitada = false
 EOF
+}
 
-# ── 7. Modelo whisper ──────────────────────────────────────────────────────
-MODELO_DIR="${XDG_DATA_HOME}/evervox/modelos"
-MODELO="${MODELO_DIR}/ggml-base.bin"
-mkdir -p "$MODELO_DIR"
+garantir_modelo() {
+    local modelo_dir="${XDG_DATA_HOME}/evervox/modelos"
+    local modelo="${modelo_dir}/ggml-base.bin"
+    mkdir -p "$modelo_dir"
 
-if [ -f "$MODELO" ]; then
-    passo "Modelo whisper base já existe em $MODELO."
-elif [ -f "${MODELO_CACHE}/ggml-base.bin" ]; then
-    passo "Copiando modelo do cache ($MODELO_CACHE)..."
-    cp "${MODELO_CACHE}/ggml-base.bin" "$MODELO"
-else
-    passo "Baixando modelo whisper base (~140 MB)..."
-    curl -L --progress-bar \
-        -o "$MODELO" \
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-    # Espelha no cache para a próxima execução
-    mkdir -p "$MODELO_CACHE"
-    cp "$MODELO" "${MODELO_CACHE}/ggml-base.bin"
-fi
-
-# ── 8. Iniciar Daemon ──────────────────────────────────────────────────────
-passo "Iniciando evervox-daemon..."
-"$BIN_DIR/evervox-daemon" >"${DIR_TMP}/daemon.log" 2>&1 &
-DAEMON_PID=$!
-
-passo "Aguardando Daemon ficar pronto (timeout ${TIMEOUT_DAEMON}s)..."
-for i in $(seq 1 "$TIMEOUT_DAEMON"); do
-    if "$BIN_DIR/evervox" status 2>/dev/null | grep -q "ativo"; then
-        passo "Daemon pronto após ${i}s."
-        break
+    if [ -f "${MODELO_CACHE}/ggml-base.bin" ]; then
+        log "Copiando modelo whisper base do cache ($MODELO_CACHE)..."
+        cp "${MODELO_CACHE}/ggml-base.bin" "$modelo"
+    else
+        log "Baixando modelo whisper base (~140 MB)..."
+        curl -L --progress-bar -o "$modelo" \
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+        mkdir -p "$MODELO_CACHE"
+        cp "$modelo" "${MODELO_CACHE}/ggml-base.bin"
     fi
-    if [ "$i" -eq "$TIMEOUT_DAEMON" ]; then
+}
+
+daemon_pronto() {
+    # Sonda pelo log, não por `evervox status`: o status também consulta o
+    # GNOME Keyring, e no barramento isolado a ativação D-Bus de
+    # org.freedesktop.secrets pode pendurar a chamada indefinidamente.
+    grep -q "pronto em" "${DIR_TMP}/daemon.log" 2>/dev/null
+}
+
+subir_daemon() {
+    log "Iniciando evervox-daemon (timeout ${TIMEOUT_DAEMON}s)..."
+    "$BIN_DIR/evervox-daemon" >"${DIR_TMP}/daemon.log" 2>&1 &
+    PIDS_LIMPEZA+=($!)
+    if ! esperar_condicao "$TIMEOUT_DAEMON" daemon_pronto; then
         echo "--- daemon.log (últimas 50 linhas) ---"
         tail -50 "${DIR_TMP}/daemon.log" 2>/dev/null || true
         falha "Daemon não subiu em ${TIMEOUT_DAEMON}s"
     fi
-    sleep 1
-done
+    log "Daemon pronto."
+}
 
-# ── 9. Gerar fixture de áudio ──────────────────────────────────────────────
-passo "Gerando fixture de áudio..."
-FIXTURE="${DIR_TMP}/ditado.wav"
-python3 "$DIR_REPO/scripts/e2e-fixture.py" "$FIXTURE"
-passo "Fixture: $(du -h "$FIXTURE" | cut -f1) — 'Ditado de teste automatizado'"
+# ── estágio 2 (degradável): compositor Wayland para a Entrega ───────────────
 
-# ── 10. Monitorar sinais D-Bus de estado ───────────────────────────────────
-dbus-monitor --address "$DBUS_SESSION_BUS_ADDRESS" \
-    "type='signal',interface='com.evervox.Daemon1',member='Estado'" \
-    >"${DIR_TMP}/estados.log" 2>/dev/null &
-DBUS_MONITOR_PID=$!
-sleep 0.5
-
-# ── 11. Executar o Ditado ──────────────────────────────────────────────────
-passo "Iniciando Toggle (gravando)..."
-ESTADO_INICIAL="$("$BIN_DIR/evervox" toggle 2>/dev/null)"
-echo "  Toggle 1 → $ESTADO_INICIAL"
-
-if [ "$ESTADO_INICIAL" != "gravando" ]; then
-    falha "Toggle 1 deveria retornar 'gravando', retornou '$ESTADO_INICIAL'"
-fi
-
-# Pequena pausa para o microfone abrir, depois toca o áudio no sink virtual
-sleep 0.3
-passo "Tocando fixture no microfone virtual..."
-paplay --device="evervox_mic" "$FIXTURE" 2>/dev/null || \
-    pw-play --target="evervox_mic" "$FIXTURE" 2>/dev/null || \
-    pw-cat --playback --target="evervox_mic" "$FIXTURE" 2>/dev/null || \
-    aviso "Não foi possível tocar o áudio (paplay/pw-play/pw-cat); tentando ffplay..."
-# Dá tempo para o áudio terminar de tocar + um pouco de margem
-sleep 3
-
-passo "Encerrando Toggle (processando)..."
-ESTADO_FINAL="$("$BIN_DIR/evervox" toggle 2>/dev/null)"
-echo "  Toggle 2 → $ESTADO_FINAL"
-
-if [ "$ESTADO_FINAL" != "ocioso" ]; then
-    falha "Toggle 2 deveria retornar 'ocioso', retornou '$ESTADO_FINAL'"
-fi
-
-# ── 12. Aguardar o Processando ─────────────────────────────────────────────
-passo "Aguardando Processando terminar (timeout ${TIMEOUT_DITADO}s)..."
-for i in $(seq 1 "$TIMEOUT_DITADO"); do
-    # O estado volta a "ocioso" no Overlay quando o Processando termina
-    if grep -q '"ocioso"' "${DIR_TMP}/estados.log" 2>/dev/null; then
-        passo "Processando concluído após ${i}s."
-        break
+subir_wayland() {
+    if ! command -v weston >/dev/null 2>&1; then
+        aviso "Estágio 2 (Entrega/clipboard) pulado: 'weston' não instalado."
+        return
     fi
-    if [ "$i" -eq "$TIMEOUT_DITADO" ]; then
-        aviso "Timeout do Processando (${TIMEOUT_DITADO}s) — conferindo mesmo assim..."
+
+    log "Iniciando Weston headless..."
+    weston --backend=headless-backend.so --socket=wayland-evervox-e2e \
+        >"${DIR_TMP}/weston.log" 2>&1 &
+    PIDS_LIMPEZA+=($!)
+
+    if ! esperar_condicao 10 test -S "${XDG_RUNTIME_DIR}/wayland-evervox-e2e"; then
+        aviso "Estágio 2 (Entrega/clipboard) pulado: Weston não criou o socket em 10s."
+        return
     fi
-    sleep 1
-done
+    export WAYLAND_DISPLAY=wayland-evervox-e2e
+    ESTAGIO2_OK=1
+    log "Compositor Wayland pronto (display: $WAYLAND_DISPLAY)"
+}
 
-# Pequena pausa extra para o clipboard ser atualizado
-sleep 1
+# ── estágio 3 (degradável): leitura dos eventos do teclado virtual ──────────
 
-# ── 13. Parar monitor D-Bus ────────────────────────────────────────────────
-kill "$DBUS_MONITOR_PID" 2>/dev/null || true
-wait "$DBUS_MONITOR_PID" 2>/dev/null || true
+iniciar_leitor_de_teclas() {
+    if [ ! -w /dev/uinput ]; then
+        aviso "Estágio 3 (colar simulado/uinput) pulado: /dev/uinput sem permissão de escrita."
+        return
+    fi
 
-# ── 14. Coletar evidências ─────────────────────────────────────────────────
-passo "Coletando evidências..."
+    # O Daemon cria o teclado virtual "evervox-colar-simulado" na
+    # inicialização; o leitor encontra o /dev/input/event* correspondente e
+    # registra cada tecla pressionada/solta em teclas.log.
+    log "Iniciando leitor de eventos do teclado virtual..."
+    python3 "$DIR_REPO/scripts/e2e-teclas.py" \
+        >"${DIR_TMP}/teclas.log" 2>"${DIR_TMP}/teclas.err" &
+    LEITOR_PID=$!
+    PIDS_LIMPEZA+=("$LEITOR_PID")
 
-TEXTO_CLIPBOARD="$(wl-paste --no-newline 2>/dev/null || echo '')"
-echo "  Clipboard: '$TEXTO_CLIPBOARD'"
+    # O leitor sai imediatamente (com stderr explicando) se não achar o
+    # dispositivo ou não tiver permissão de leitura — nesses casos o estágio
+    # degrada em vez de falhar o teste.
+    sleep 2
+    if kill -0 "$LEITOR_PID" 2>/dev/null; then
+        ESTAGIO3_OK=1
+    else
+        aviso "Estágio 3 (colar simulado/uinput) pulado: $(cat "${DIR_TMP}/teclas.err" 2>/dev/null || echo 'leitor de eventos encerrou')"
+    fi
+}
 
-ESTADOS="$(cat "${DIR_TMP}/estados.log" 2>/dev/null || echo '')"
-echo "  Sinais D-Bus:"
-echo "$ESTADOS" | sed 's/^/    /'
+# ── o Ditado ─────────────────────────────────────────────────────────────────
 
-# ── 15. Asserções ──────────────────────────────────────────────────────────
-ERROS=0
+executar_ditado() {
+    log "Monitorando sinais D-Bus de estado..."
+    dbus-monitor --address "$DBUS_SESSION_BUS_ADDRESS" \
+        "type='signal',interface='com.evervox.Daemon1',member='Estado'" \
+        >"${DIR_TMP}/estados.log" 2>/dev/null &
+    PIDS_LIMPEZA+=($!)
+    sleep 0.5
 
-passo "Verificando sequência de estados D-Bus..."
-if echo "$ESTADOS" | grep -q '"gravando"'; then
-    passo "  ✓ 'gravando' detectado"
-else
-    aviso "  ✗ 'gravando' NÃO detectado"
-    ERROS=$((ERROS + 1))
-fi
+    log "Gerando fixture de fala ('Ditado de teste automatizado')..."
+    python3 "$DIR_REPO/scripts/e2e-fixture.py" "${DIR_TMP}/ditado.wav"
 
-if echo "$ESTADOS" | grep -q '"processando"'; then
-    passo "  ✓ 'processando' detectado"
-else
-    aviso "  ✗ 'processando' NÃO detectado"
-    ERROS=$((ERROS + 1))
-fi
+    log "Toggle 1 (iniciar gravação)..."
+    local estado
+    estado="$("$BIN_DIR/evervox" toggle 2>/dev/null)"
+    [ "$estado" = "gravando" ] ||
+        falha "Toggle 1 deveria retornar 'gravando', retornou '$estado'"
 
-if echo "$ESTADOS" | grep -q '"ocioso"'; then
-    passo "  ✓ 'ocioso' detectado"
-else
-    aviso "  ✗ 'ocioso' NÃO detectado"
-    ERROS=$((ERROS + 1))
-fi
+    sleep 0.3 # margem para o microfone abrir o stream de captura
+    log "Tocando o fixture no microfone virtual..."
+    # paplay/pw-play/pw-cat bloqueiam até o áudio terminar de tocar.
+    paplay --device=evervox_mic "${DIR_TMP}/ditado.wav" 2>/dev/null ||
+        pw-play --target=evervox_mic "${DIR_TMP}/ditado.wav" 2>/dev/null ||
+        pw-cat --playback --target=evervox_mic "${DIR_TMP}/ditado.wav" 2>/dev/null ||
+        falha "não foi possível tocar o fixture (paplay/pw-play/pw-cat)"
+    sleep 0.5 # margem para as últimas amostras atravessarem o grafo
 
-passo "Verificando transcrição no clipboard..."
-# O whisper base com áudio sintetizado em pt-br para "Ditado de teste
-# automatizado" deve produzir algo razoável. Aceitamos qualquer texto
-# não vazio — a qualidade da transcrição depende do modelo e do áudio.
-if [ -n "$TEXTO_CLIPBOARD" ]; then
-    passo "  ✓ Clipboard contém: '$TEXTO_CLIPBOARD'"
-else
-    aviso "  ✗ Clipboard vazio"
-    ERROS=$((ERROS + 1))
-fi
+    log "Toggle 2 (encerrar e processar)..."
+    estado="$("$BIN_DIR/evervox" toggle 2>/dev/null)"
+    [ "$estado" = "ocioso" ] ||
+        falha "Toggle 2 deveria retornar 'ocioso', retornou '$estado'"
 
-# ── 16. Logs em caso de falha ──────────────────────────────────────────────
+    log "Aguardando o Processando terminar (timeout ${TIMEOUT_DITADO}s)..."
+    if ! esperar_condicao "$TIMEOUT_DITADO" grep -q '"ocioso"' "${DIR_TMP}/estados.log"; then
+        aviso "Processando não sinalizou 'ocioso' em ${TIMEOUT_DITADO}s — conferindo mesmo assim..."
+    fi
+    sleep 1 # margem para clipboard/eventos assentarem
+}
+
+# ── asserções ────────────────────────────────────────────────────────────────
+
+verificar_estado() {
+    local estado="$1"
+    if grep -q "\"$estado\"" "${DIR_TMP}/estados.log" 2>/dev/null; then
+        log "  ✓ Estado('$estado') detectado"
+    else
+        aviso "  ✗ Estado('$estado') NÃO detectado"
+        ERROS=$((ERROS + 1))
+    fi
+}
+
+verificar_estagio1_estados() {
+    log "Estágio 1 — sequência de estados D-Bus:"
+    verificar_estado gravando
+    verificar_estado processando
+    verificar_estado ocioso
+}
+
+verificar_estagio2_clipboard() {
+    if [ "$ESTAGIO2_OK" != 1 ]; then
+        log "Estágio 2 — pulado (sem compositor Wayland)."
+        return
+    fi
+
+    log "Estágio 2 — transcrição no clipboard:"
+    local texto
+    texto="$(wl-paste --no-newline 2>/dev/null || echo '')"
+    # O whisper base transcreve a fala sintetizada de forma imprecisa (ex.:
+    # "E até o teste automático." para "Ditado de teste automatizado"), então
+    # o assert é difuso: alguma palavra-chave da frase precisa aparecer.
+    # "autom" cobre automatizado/automático; um match exato flakaria.
+    if echo "$texto" | grep -qiE 'teste|autom|ditado'; then
+        log "  ✓ Clipboard contém a transcrição: '$texto'"
+    elif [ -n "$texto" ]; then
+        aviso "  ✗ Clipboard tem texto sem relação com o fixture: '$texto'"
+        ERROS=$((ERROS + 1))
+    else
+        aviso "  ✗ Clipboard vazio"
+        ERROS=$((ERROS + 1))
+    fi
+}
+
+verificar_estagio3_uinput() {
+    if [ "$ESTAGIO3_OK" != 1 ]; then
+        log "Estágio 3 — pulado (sem acesso a uinput)."
+        return
+    fi
+
+    log "Estágio 3 — atalho de colar no teclado virtual:"
+    # Sem a extensão GNOME neste ambiente, o Foco degrada para o atalho
+    # padrão: esperamos Ctrl+V (e não Ctrl+Shift+V de terminal).
+    if grep -q "KEY_LEFTCTRL press" "${DIR_TMP}/teclas.log" 2>/dev/null &&
+        grep -q "KEY_V press" "${DIR_TMP}/teclas.log" 2>/dev/null; then
+        log "  ✓ Ctrl+V simulado detectado nos eventos de uinput"
+    else
+        aviso "  ✗ Ctrl+V NÃO detectado nos eventos de uinput"
+        echo "--- teclas.log ---"
+        cat "${DIR_TMP}/teclas.log" 2>/dev/null || true
+        ERROS=$((ERROS + 1))
+    fi
+}
+
+# ── roteiro ──────────────────────────────────────────────────────────────────
+
+subir_dbus
+subir_pipewire
+criar_mic_virtual
+subir_wayland
+garantir_binarios
+preparar_config
+garantir_modelo
+subir_daemon
+iniciar_leitor_de_teclas
+executar_ditado
+
+verificar_estagio1_estados
+verificar_estagio2_clipboard
+verificar_estagio3_uinput
+
 if [ "$ERROS" -gt 0 ]; then
     echo ""
     echo "--- daemon.log (últimas 60 linhas) ---"
     tail -60 "${DIR_TMP}/daemon.log" 2>/dev/null || true
-fi
-
-# ── 17. Cleanup ────────────────────────────────────────────────────────────
-passo "Encerrando processos..."
-kill "$DAEMON_PID" 2>/dev/null || true
-wait "$DAEMON_PID" 2>/dev/null || true
-kill "$WESTON_PID" 2>/dev/null || true
-wait "$WESTON_PID" 2>/dev/null || true
-kill "$WIREPLUMBER_PID" 2>/dev/null || true
-wait "$WIREPLUMBER_PID" 2>/dev/null || true
-kill "$PIPEWIRE_PULSE_PID" 2>/dev/null || true
-wait "$PIPEWIRE_PULSE_PID" 2>/dev/null || true
-kill "$PIPEWIRE_PID" 2>/dev/null || true
-wait "$PIPEWIRE_PID" 2>/dev/null || true
-kill "$DBUS_PID" 2>/dev/null || true
-wait "$DBUS_PID" 2>/dev/null || true
-
-# ── 18. Resultado ──────────────────────────────────────────────────────────
-echo ""
-if [ "$ERROS" -eq 0 ]; then
-    passo "E2E concluído com sucesso!"
-    exit 0
-else
     falha "E2E falhou com $ERROS erro(s)"
 fi
+
+log "E2E concluído com sucesso."

@@ -46,11 +46,13 @@ jobs:
       - name: Build
         run: cargo build --workspace --release
 
-      - name: Script de instalação (sintaxe + shellcheck)
+      - name: Scripts shell (sintaxe + shellcheck)
         run: |
-          bash -n scripts/instalar.sh
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck scripts/instalar.sh
+            shellcheck scripts/*.sh
           fi
 
   # ── E2E: pipeline de Ditado ponta a ponta em ambiente headless ──────────
@@ -95,6 +97,20 @@ jobs:
           if ! command -v dbus-daemon >/dev/null 2>&1; then
             sudo apt-get install -y dbus-x11
           fi
+
+      # Estágio 3 do E2E (colar simulado): o Daemon precisa criar um teclado
+      # virtual em /dev/uinput e o leitor de eventos precisa ler o
+      # /dev/input/event* resultante. Sem estas permissões o estágio degrada
+      # para "pulado" — com elas, é exercitado de verdade.
+      - name: Permissões de uinput e eventos de input (estágio 3)
+        run: |
+          sudo modprobe uinput
+          {
+            echo 'KERNEL=="uinput", MODE="0666"'
+            echo 'KERNEL=="event*", SUBSYSTEM=="input", MODE="0666"'
+          } | sudo tee /etc/udev/rules.d/99-evervox-e2e.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger
 
       - name: E2E
         run: ./scripts/e2e.sh
