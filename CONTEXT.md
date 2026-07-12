@@ -225,10 +225,15 @@ monitor source como default), fala sintetizada por `libespeak-ng` via
 Três estágios (linguagem da issue #24), com contrato de degradação:
 
 1. **Sinais de estado (D-Bus)** — obrigatório; falha aqui falha o teste.
-2. **Entrega (clipboard)** — precisa de `sway` headless (wlroots implementa o data-control que o wl-clipboard exige sem foco; Weston não); ausente, o
-   estágio é pulado com aviso. O assert da transcrição é difuso
-   (`teste|autom|ditado`): o whisper base transcreve a fala sintetizada de
-   forma imprecisa, então um match exato flakaria.
+2. **Entrega (clipboard)** — precisa de `sway` headless (wlroots implementa
+   o data-control que o wl-clipboard exige sem foco; Weston não); ausente, o
+   estágio é pulado com aviso. Como a Entrega restaura o clipboard anterior
+   quando o colar funciona (ADR 0001), o assert semeia uma sentinela antes
+   do Ditado, observa a Transcrição passar pelo clipboard via
+   `wl-paste --watch` e confere a restauração da sentinela no final. O
+   match da transcrição é difuso (`teste|autom|ditado`): o whisper base
+   transcreve a fala sintetizada de forma imprecisa, então um match exato
+   flakaria.
 3. **Colar simulado (uinput)** — precisa de `/dev/uinput` gravável e
    leitura de `/dev/input/event*` (`scripts/e2e-teclas.py` lê o dispositivo
    direto, sem `evtest`); sem acesso, é pulado com aviso.

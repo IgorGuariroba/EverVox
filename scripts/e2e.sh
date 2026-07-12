@@ -265,6 +265,23 @@ iniciar_leitor_de_teclas() {
     fi
 }
 
+# Conteúdo semeado no clipboard antes do Ditado: quando o colar simulado
+# funciona, a Entrega restaura o clipboard anterior no final (ADR 0001) — a
+# sentinela é como o estágio 2 verifica essa restauração.
+SENTINELA_CLIPBOARD="clipboard-anterior-do-e2e"
+
+preparar_clipboard_estagio2() {
+    [ "$ESTAGIO2_OK" = 1 ] || return 0
+    log "Semeando o clipboard com a sentinela e monitorando mudanças..."
+    printf '%s' "$SENTINELA_CLIPBOARD" | wl-copy
+    # Cada mudança de clipboard (a cópia da Transcrição e a restauração da
+    # sentinela) é registrada — é aqui que a Transcrição fica observável,
+    # já que o clipboard final volta ao estado anterior.
+    wl-paste --watch tee -a "${DIR_TMP}/clipboard_mudancas.log" >/dev/null 2>&1 &
+    PIDS_LIMPEZA+=($!)
+    sleep 0.5
+}
+
 # ── o Ditado ─────────────────────────────────────────────────────────────────
 
 executar_ditado() {
@@ -330,21 +347,41 @@ verificar_estagio2_clipboard() {
         return
     fi
 
-    log "Estágio 2 — transcrição no clipboard:"
-    local texto
-    texto="$(wl-paste --no-newline 2>/dev/null || echo '')"
-    # O whisper base transcreve a fala sintetizada de forma imprecisa (ex.:
-    # "E até o teste automático." para "Ditado de teste automatizado"), então
-    # o assert é difuso: alguma palavra-chave da frase precisa aparecer.
-    # "autom" cobre automatizado/automático; um match exato flakaria.
-    if echo "$texto" | grep -qiE 'teste|autom|ditado'; then
-        log "  ✓ Clipboard contém a transcrição: '$texto'"
-    elif [ -n "$texto" ]; then
-        aviso "  ✗ Clipboard tem texto sem relação com o fixture: '$texto'"
-        ERROS=$((ERROS + 1))
+    log "Estágio 2 — Transcrição via clipboard e restauração:"
+
+    # A Transcrição passa pelo clipboard durante a Entrega e é observada no
+    # log de mudanças. O whisper base transcreve a fala sintetizada de forma
+    # imprecisa (ex.: "E até o teste automático." para "Ditado de teste
+    # automatizado"), então o assert é difuso: alguma palavra-chave precisa
+    # aparecer ("autom" cobre automatizado/automático); match exato flakaria.
+    if grep -qiE 'teste|autom|ditado' "${DIR_TMP}/clipboard_mudancas.log" 2>/dev/null; then
+        log "  ✓ Transcrição passou pelo clipboard"
     else
-        aviso "  ✗ Clipboard vazio"
+        aviso "  ✗ Transcrição NÃO passou pelo clipboard"
+        echo "--- clipboard_mudancas.log ---"
+        cat "${DIR_TMP}/clipboard_mudancas.log" 2>/dev/null || true
         ERROS=$((ERROS + 1))
+    fi
+
+    # O estado final do clipboard depende do colar simulado (ADR 0001):
+    # colar funcionou → o clipboard anterior (a sentinela) é restaurado;
+    # colar indisponível → a Transcrição permanece como fallback manual.
+    local texto_final
+    texto_final="$(wl-paste --no-newline 2>/dev/null || echo '')"
+    if [ "$ESTAGIO3_OK" = 1 ]; then
+        if [ "$texto_final" = "$SENTINELA_CLIPBOARD" ]; then
+            log "  ✓ Clipboard anterior (sentinela) restaurado após a Entrega"
+        else
+            aviso "  ✗ Clipboard deveria ter voltado à sentinela, contém: '$texto_final'"
+            ERROS=$((ERROS + 1))
+        fi
+    else
+        if echo "$texto_final" | grep -qiE 'teste|autom|ditado'; then
+            log "  ✓ Transcrição ficou no clipboard (fallback sem colar simulado)"
+        else
+            aviso "  ✗ Clipboard deveria conter a Transcrição (fallback), contém: '$texto_final'"
+            ERROS=$((ERROS + 1))
+        fi
     fi
 }
 
@@ -379,6 +416,7 @@ preparar_config
 garantir_modelo
 subir_daemon
 iniciar_leitor_de_teclas
+preparar_clipboard_estagio2
 executar_ditado
 
 verificar_estagio1_estados
