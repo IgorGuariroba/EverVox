@@ -1,8 +1,8 @@
-//! Config TOML do Daemon: modelo local, idioma do Engine e lista de
-//! terminais conhecidos (usada pela Entrega para decidir entre `Ctrl+V` e
-//! `Ctrl+Shift+V`, ver [`crate::foco`]). Criada com defaults na primeira
-//! execução, em `$XDG_CONFIG_HOME/evervox/config.toml` (ou
-//! `~/.config/evervox/config.toml`).
+//! Config TOML do Daemon: modelo local, Idioma de entrada/saída do Engine e
+//! da Tradução, e lista de terminais conhecidos (usada pela Entrega para
+//! decidir entre `Ctrl+V` e `Ctrl+Shift+V`, ver [`crate::foco`]). Criada com
+//! defaults na primeira execução, em `$XDG_CONFIG_HOME/evervox/config.toml`
+//! (ou `~/.config/evervox/config.toml`).
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -65,7 +65,13 @@ impl Default for ConfigLimpeza {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub idioma: String,
+    /// Idioma de entrada: o idioma falado na Gravação, que orienta o Engine
+    /// na transcrição (ver `CONTEXT.md`).
+    pub idioma_entrada: String,
+    /// Idioma de saída: o idioma do texto entregue ao app focado. Quando
+    /// igual ao Idioma de entrada, não há Tradução (ver `CONTEXT.md` e
+    /// `crate::limpeza`).
+    pub idioma_saida: String,
     pub modelo_local: String,
     pub engine: Engine,
     /// Identificadores de app (WM_CLASS, como devolvido pela extensão GNOME)
@@ -82,7 +88,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            idioma: "pt".to_string(),
+            idioma_entrada: "pt".to_string(),
+            idioma_saida: "pt".to_string(),
             modelo_local: "base".to_string(),
             engine: Engine::default(),
             terminais_conhecidos: [
@@ -137,12 +144,27 @@ mod tests {
     #[test]
     fn defaults_sao_pt_modelo_base_e_engine_local() {
         let config = Config::default();
-        assert_eq!(config.idioma, "pt");
+        assert_eq!(config.idioma_entrada, "pt");
+        assert_eq!(config.idioma_saida, "pt");
         assert_eq!(config.modelo_local, "base");
         assert_eq!(config.engine, Engine::Local);
         assert!(config
             .terminais_conhecidos
             .contains(&"gnome-terminal-server".to_string()));
+    }
+
+    #[test]
+    fn idioma_de_saida_diferente_do_de_entrada_e_lido_da_config_toml() {
+        let config: Config = toml::from_str(
+            r#"
+            idioma_entrada = "pt"
+            idioma_saida = "en"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.idioma_entrada, "pt");
+        assert_eq!(config.idioma_saida, "en");
     }
 
     #[test]

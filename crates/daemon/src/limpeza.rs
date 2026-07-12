@@ -1,13 +1,13 @@
-//! Limpeza por LLM: pós-processa a Transcrição crua removendo hesitações e
-//! corrigindo gramática/pontuação, orientada pelas Instruções da Limpeza e
-//! pelo Vocabulário do usuário (ver `CONTEXT.md`). Cada provedor (OpenAI,
+//! Limpeza por LLM e Tradução: pós-processa a Transcrição crua removendo
+//! hesitações e corrigindo gramática/pontuação (orientada pelas Instruções da
+//! Limpeza e pelo Vocabulário do usuário), e/ou traduz o texto do Idioma de
+//! entrada para o Idioma de saída (ver `CONTEXT.md`). Cada provedor (OpenAI,
 //! Anthropic) implementa [`Limpeza`]; a escolha de provedor é estática por
 //! config, como o Engine (ver [`crate::engine_cloud`]).
 //!
-//! Nota de design (ADR 0003): a costura aqui — um prompt de sistema montado a
-//! partir do [`ContextoLimpeza`] e uma única chamada de LLM — nasce preparada
-//! para fundir Limpeza + Tradução numa única chamada quando a Tradução for
-//! implementada.
+//! Nota de design (ADR 0003): quando Limpeza e Tradução estão ambas ligadas,
+//! [`Instrucao::LimparETraduzir`] funde as duas num só prompt de sistema —
+//! uma única chamada de LLM, sem mudar como o núcleo invoca [`Limpeza::limpar`].
 
 use evervox_core::{ErroLimpeza, Limpeza};
 use std::time::Duration;
@@ -34,10 +34,26 @@ pub struct ContextoLimpeza {
     pub pontuacao_falada: bool,
 }
 
-/// Monta o prompt de sistema a partir do [`ContextoLimpeza`]: restrito a
-/// limpar (nunca parafrasear, resumir ou inventar conteúdo), ver critério de
-/// aceite da Limpeza.
-fn prompt_sistema(contexto: &ContextoLimpeza) -> String {
+/// O que a chamada de LLM desta invocação deve fazer: só limpar, só traduzir,
+/// ou fundir as duas (ver ADR 0003) — decide o prompt de sistema montado por
+/// [`prompt_sistema`], mas sempre resulta numa única chamada HTTP por
+/// invocação de [`Limpeza::limpar`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Instrucao {
+    Limpar(ContextoLimpeza),
+    Traduzir {
+        idioma_saida: String,
+    },
+    LimparETraduzir {
+        contexto: ContextoLimpeza,
+        idioma_saida: String,
+    },
+}
+
+/// Monta a parte do prompt de sistema referente à Limpeza a partir do
+/// [`ContextoLimpeza`]: restrito a limpar (nunca parafrasear, resumir ou
+/// inventar conteúdo), ver critério de aceite da Limpeza.
+fn prompt_limpeza(contexto: &ContextoLimpeza) -> String {
     let mut prompt = String::from(
         "Você limpa transcrições de fala em texto: remove hesitações (\"éé\", \"tipo\", \
          \"né\"), corrige gramática e pontuação. Nunca parafraseia, resume, traduz ou \
@@ -72,6 +88,43 @@ fn prompt_sistema(contexto: &ContextoLimpeza) -> String {
     }
 
     prompt
+}
+
+/// Monta a parte do prompt de sistema referente à Tradução pura (Limpeza
+/// desligada): traduz literalmente para `idioma_saida`, sem corrigir
+/// gramática, pontuação ou remover hesitações — isso é trabalho da Limpeza,
+/// que aqui está desligada (ver critério de aceite da Tradução).
+fn prompt_traducao(idioma_saida: &str) -> String {
+    format!(
+        "Você traduz transcrições de fala em texto para o idioma \"{idioma_saida}\". Traduza \
+         fielmente o conteúdo original, preservando o significado — nunca resuma, parafraseie \
+         livremente ou invente conteúdo que não esteja no texto original. Não corrija gramática \
+         ou pontuação, nem remova hesitações do idioma de origem: apenas traduza. Responda \
+         somente com o texto traduzido, sem comentários, aspas ou explicações adicionais."
+    )
+}
+
+/// Monta o prompt de sistema a partir da [`Instrucao`] desta invocação (ver
+/// ADR 0003): quando Limpeza e Tradução estão ambas ligadas, funde as duas
+/// instruções num só prompt, para que uma única chamada de LLM limpe e
+/// traduza o texto.
+fn prompt_sistema(instrucao: &Instrucao) -> String {
+    match instrucao {
+        Instrucao::Limpar(contexto) => prompt_limpeza(contexto),
+        Instrucao::Traduzir { idioma_saida } => prompt_traducao(idioma_saida),
+        Instrucao::LimparETraduzir {
+            contexto,
+            idioma_saida,
+        } => {
+            let mut prompt = prompt_limpeza(contexto);
+            prompt.push_str(&format!(
+                "\n\nAlém de limpar, traduza o resultado final para o idioma \"{idioma_saida}\". \
+                 A tradução também nunca resume, parafraseia livremente ou inventa conteúdo — \
+                 apenas verte fielmente para o idioma de saída o texto já limpo."
+            ));
+            prompt
+        }
+    }
 }
 
 /// Constrói o cliente HTTP bloqueante compartilhado pelos provedores da
@@ -132,20 +185,21 @@ pub struct LimpezaOpenAI {
 }
 
 impl LimpezaOpenAI {
-    pub fn nova(
-        chave_api: String,
-        modelo: &str,
-        contexto: &ContextoLimpeza,
-        timeout: Duration,
-    ) -> Self {
-        Self::com_url(URL_OPENAI.to_string(), chave_api, modelo, contexto, timeout)
+    pub fn nova(chave_api: String, modelo: &str, instrucao: &Instrucao, timeout: Duration) -> Self {
+        Self::com_url(
+            URL_OPENAI.to_string(),
+            chave_api,
+            modelo,
+            instrucao,
+            timeout,
+        )
     }
 
     fn com_url(
         url: String,
         chave_api: String,
         modelo: &str,
-        contexto: &ContextoLimpeza,
+        instrucao: &Instrucao,
         timeout: Duration,
     ) -> Self {
         Self {
@@ -153,7 +207,7 @@ impl LimpezaOpenAI {
             url,
             chave_api,
             modelo: modelo.to_string(),
-            prompt_sistema: prompt_sistema(contexto),
+            prompt_sistema: prompt_sistema(instrucao),
         }
     }
 }
@@ -232,17 +286,12 @@ pub struct LimpezaAnthropic {
 }
 
 impl LimpezaAnthropic {
-    pub fn nova(
-        chave_api: String,
-        modelo: &str,
-        contexto: &ContextoLimpeza,
-        timeout: Duration,
-    ) -> Self {
+    pub fn nova(chave_api: String, modelo: &str, instrucao: &Instrucao, timeout: Duration) -> Self {
         Self::com_url(
             URL_ANTHROPIC.to_string(),
             chave_api,
             modelo,
-            contexto,
+            instrucao,
             timeout,
         )
     }
@@ -251,7 +300,7 @@ impl LimpezaAnthropic {
         url: String,
         chave_api: String,
         modelo: &str,
-        contexto: &ContextoLimpeza,
+        instrucao: &Instrucao,
         timeout: Duration,
     ) -> Self {
         Self {
@@ -259,7 +308,7 @@ impl LimpezaAnthropic {
             url,
             chave_api,
             modelo: modelo.to_string(),
-            prompt_sistema: prompt_sistema(contexto),
+            prompt_sistema: prompt_sistema(instrucao),
         }
     }
 }
@@ -369,6 +418,10 @@ mod tests {
         ContextoLimpeza::default()
     }
 
+    fn instrucao_padrao() -> Instrucao {
+        Instrucao::Limpar(contexto_padrao())
+    }
+
     #[test]
     fn prompt_de_sistema_inclui_instrucoes_vocabulario_e_pontuacao_falada() {
         let contexto = ContextoLimpeza {
@@ -377,7 +430,7 @@ mod tests {
             pontuacao_falada: true,
         };
 
-        let prompt = prompt_sistema(&contexto);
+        let prompt = prompt_sistema(&Instrucao::Limpar(contexto));
 
         assert!(prompt.contains("expanda siglas"));
         assert!(prompt.contains("EverVox, GNOME"));
@@ -392,9 +445,37 @@ mod tests {
             ..ContextoLimpeza::default()
         };
 
-        let prompt = prompt_sistema(&contexto);
+        let prompt = prompt_sistema(&Instrucao::Limpar(contexto));
 
         assert!(prompt.contains("Não converta palavras de pontuação faladas"));
+    }
+
+    #[test]
+    fn prompt_de_traducao_pura_instrui_a_traduzir_sem_limpar() {
+        let prompt = prompt_sistema(&Instrucao::Traduzir {
+            idioma_saida: "en".to_string(),
+        });
+
+        assert!(prompt.contains("\"en\""));
+        assert!(prompt.contains("Não corrija gramática"));
+        assert!(!prompt.contains("remove hesitações"));
+    }
+
+    #[test]
+    fn prompt_fundido_instrui_a_limpar_e_traduzir_numa_so_chamada() {
+        let contexto = ContextoLimpeza {
+            instrucoes: "expanda siglas".to_string(),
+            ..ContextoLimpeza::default()
+        };
+
+        let prompt = prompt_sistema(&Instrucao::LimparETraduzir {
+            contexto,
+            idioma_saida: "en".to_string(),
+        });
+
+        assert!(prompt.contains("expanda siglas"));
+        assert!(prompt.contains("remove hesitações"));
+        assert!(prompt.contains("\"en\""));
     }
 
     #[test]
@@ -413,7 +494,7 @@ mod tests {
             url,
             "chave-de-teste".to_string(),
             "gpt-4o-mini",
-            &contexto_padrao(),
+            &instrucao_padrao(),
             Duration::from_secs(5),
         );
 
@@ -432,7 +513,7 @@ mod tests {
             url,
             "chave-secreta".to_string(),
             "gpt-4o-mini",
-            &contexto_padrao(),
+            &instrucao_padrao(),
             Duration::from_secs(5),
         );
 
@@ -449,7 +530,7 @@ mod tests {
             url,
             "chave-de-teste".to_string(),
             "gpt-4o-mini",
-            &contexto_padrao(),
+            &instrucao_padrao(),
             Duration::from_millis(50),
         );
 
@@ -468,7 +549,7 @@ mod tests {
             url,
             "chave-de-teste".to_string(),
             "claude-3-5-haiku-latest",
-            &contexto_padrao(),
+            &instrucao_padrao(),
             Duration::from_secs(5),
         );
 
@@ -487,7 +568,7 @@ mod tests {
             url,
             "chave-secreta".to_string(),
             "claude-3-5-haiku-latest",
-            &contexto_padrao(),
+            &instrucao_padrao(),
             Duration::from_secs(5),
         );
 
@@ -495,5 +576,52 @@ mod tests {
 
         assert!(erro.0.contains("401"));
         assert!(!erro.0.contains("chave-secreta"));
+    }
+
+    #[test]
+    fn traducao_pura_devolve_o_texto_traduzido_sem_limpar() {
+        let url = servidor_mock(resposta_http(
+            "200 OK",
+            r#"{"choices":[{"message":{"content":"Hi, world."}}]}"#,
+        ));
+        let mut limpeza = LimpezaOpenAI::com_url(
+            url,
+            "chave-de-teste".to_string(),
+            "gpt-4o-mini",
+            &Instrucao::Traduzir {
+                idioma_saida: "en".to_string(),
+            },
+            Duration::from_secs(5),
+        );
+
+        let texto = limpeza.limpar("oi mundo").unwrap();
+
+        assert_eq!(texto, "Hi, world.");
+    }
+
+    #[test]
+    fn limpeza_e_traducao_fundidas_resolvem_numa_unica_chamada() {
+        // O servidor mock aceita uma única conexão (ver `servidor_mock`); se
+        // `LimparETraduzir` disparasse duas chamadas de LLM em vez de uma, a
+        // segunda não teria quem respondesse. O sucesso aqui já comprova a
+        // fusão numa única chamada (ver ADR 0003).
+        let url = servidor_mock(resposta_http(
+            "200 OK",
+            r#"{"content":[{"type":"text","text":"Hi, world."}]}"#,
+        ));
+        let mut limpeza = LimpezaAnthropic::com_url(
+            url,
+            "chave-de-teste".to_string(),
+            "claude-3-5-haiku-latest",
+            &Instrucao::LimparETraduzir {
+                contexto: contexto_padrao(),
+                idioma_saida: "en".to_string(),
+            },
+            Duration::from_secs(5),
+        );
+
+        let texto = limpeza.limpar("éé oi mundo").unwrap();
+
+        assert_eq!(texto, "Hi, world.");
     }
 }
