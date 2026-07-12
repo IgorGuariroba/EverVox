@@ -1,6 +1,6 @@
 [package]
 name = "evervox-daemon"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 # Sem palavras acentuadas de propósito: a Central de Aplicativos (PackageKit)
 # converte a descrição de .deb local para ASCII e troca acentos por "?".
@@ -55,6 +55,7 @@ assets = [
     ["target/release/evervox-daemon", "usr/bin/", "755"],
     ["target/release/evervox", "usr/bin/", "755"],
     ["../../packaging/pos-instalar.sh", "usr/bin/evervox-pos-instalar", "755"],
+    ["../../packaging/preferencias.sh", "usr/bin/evervox-preferencias", "755"],
     ["../../packaging/evervox.service", "usr/lib/systemd/user/", "644"],
     ["../../packaging/99-evervox-uinput.rules", "usr/lib/udev/rules.d/", "644"],
     ["../../packaging/evervox.desktop", "usr/share/applications/", "644"],
