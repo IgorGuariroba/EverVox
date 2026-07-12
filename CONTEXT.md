@@ -253,7 +253,6 @@ Três estágios (linguagem da issue #24), com contrato de degradação:
    leitura de `/dev/input/event*` (`scripts/e2e-teclas.py` lê o dispositivo
    direto, sem `evtest`); sem acesso, é pulado com aviso.
 
-No CI, o job `e2e` roda separado do `ci` e é **não-bloqueante**
-(`continue-on-error: true`) enquanto estabiliza — promover a bloqueante só
-depois de rodar limpo por um período (ver issue #24). O modelo whisper é
-cacheado entre runs (`~/.cache/evervox-e2e`).
+No CI, o job `e2e` roda separado do `ci` e é **bloqueante** desde
+2026-07-12: exigido no ruleset `protect-main` junto com `ci` (promovido via
+issue #24). O modelo whisper é cacheado entre runs (`~/.cache/evervox-e2e`).
