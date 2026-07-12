@@ -18,7 +18,11 @@ mexer no código.
 
 ## Instalação pelo pacote .deb
 
-Baixe (ou gere, ver abaixo) o `evervox_*.deb` e instale:
+Baixe o `evervox_*.deb` da [página de
+releases](https://github.com/IgorGuariroba/EverVox/releases) (publicado
+automaticamente a cada tag `vX.Y.Z`, ver
+`.github/workflows/release.yml`) — ou gere você mesmo, ver abaixo — e
+instale:
 
 ```bash
 sudo apt install ./evervox_0.1.0-1_amd64.deb

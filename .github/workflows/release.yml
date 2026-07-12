@@ -1,0 +1,57 @@
+name: Release
+
+# Publica o pacote .deb automaticamente a cada tag de versão: um push de
+# `vX.Y.Z` gera o pacote via scripts/empacotar-deb.sh e cria o release do
+# GitHub com o .deb anexado e as notas geradas a partir dos PRs.
+#
+# Fluxo de release: suba a versão nos Cargo.toml dos crates, mescle na main
+# e então crie a tag correspondente (ex.: git tag v0.1.0 && git push --tags).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: release (.deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependências de sistema (ALSA para cpal; cmake/clang para whisper-rs)
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev cmake libclang-dev
+
+      - name: Instalar toolchain Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de dependências
+        uses: Swatinem/rust-cache@v2
+
+      - name: Instalar cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Conferir que a tag bate com a versão do crate
+        run: |
+          versao_crate="$(cargo pkgid -p evervox-daemon | sed 's/.*#//')"
+          versao_tag="${GITHUB_REF_NAME#v}"
+          if [ "$versao_tag" != "$versao_crate" ]; then
+            echo "erro: tag $GITHUB_REF_NAME não bate com a versão do crate ($versao_crate)." >&2
+            echo "Suba a versão em crates/*/Cargo.toml antes de criar a tag." >&2
+            exit 1
+          fi
+
+      - name: Gerar o .deb
+        run: ./scripts/empacotar-deb.sh
+
+      - name: Criar o release com o .deb anexado
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" target/debian/*.deb \
+            --title "EverVox $GITHUB_REF_NAME" \
+            --generate-notes
