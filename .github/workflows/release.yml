@@ -13,6 +13,11 @@ name: Release
 on:
   push:
     branches: [main]
+  # Válvula de escape enquanto o auto-merge usa o GITHUB_TOKEN: o merge
+  # feito pelo bot não gera evento de push que dispare workflows, então o
+  # release pode ser acionado à mão (gh workflow run Release) — a checagem
+  # de versão inédita vale igual.
+  workflow_dispatch:
 
 permissions:
   contents: write
