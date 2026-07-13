@@ -120,7 +120,9 @@ fn prompt_sistema(instrucao: &Instrucao) -> String {
             prompt.push_str(&format!(
                 "\n\nAlém de limpar, traduza o resultado final para o idioma \"{idioma_saida}\". \
                  A tradução também nunca resume, parafraseia livremente ou inventa conteúdo — \
-                 apenas verte fielmente para o idioma de saída o texto já limpo."
+                 apenas verte fielmente para o idioma de saída o texto já limpo. Responda SOMENTE \
+                 com o texto final no idioma \"{idioma_saida}\": nunca inclua o texto no idioma \
+                 de origem, nem as duas versões juntas, nem rótulos de idioma — apenas a tradução."
             ));
             prompt
         }
@@ -476,6 +478,9 @@ mod tests {
         assert!(prompt.contains("expanda siglas"));
         assert!(prompt.contains("remove hesitações"));
         assert!(prompt.contains("\"en\""));
+        // Não deve devolver as duas versões (origem + tradução) juntas.
+        assert!(prompt.contains("Responda SOMENTE"));
+        assert!(prompt.contains("nunca inclua o texto no idioma"));
     }
 
     #[test]
