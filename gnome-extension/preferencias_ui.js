@@ -34,10 +34,13 @@
 // fixado, mas o gjs standalone não.
 
 import Adw from 'gi://Adw?version=1';
+import Gdk from 'gi://Gdk?version=4.0';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk?version=4.0';
 import Secret from 'gi://Secret?version=1';
+
+import {detectarConflito} from './atalho.js';
 
 const DAEMON_SERVICE_NAME = 'com.evervox.Daemon';
 const DAEMON_OBJECT_PATH = '/com/evervox/Daemon';
@@ -272,6 +275,222 @@ function reiniciarDaemon() {
     }
 }
 
+// ── Atalho de teclado (Toggle) ──────────────────────────────────────────
+// O EverVox não captura teclas: registra um custom-keybinding do GNOME que
+// roda `evervox toggle`. Se a combinação já pertence a um atalho nativo, o
+// Mutter recusa o grab e a tecla nunca dispara (ver `packaging/pos-instalar.sh`
+// e `atalho.js`). Esta seção deixa o usuário escolher a combinação com um
+// widget de captura e avisa, antes de gravar, se ela já está em uso.
+
+const BASE_MEDIA_KEYS = 'org.gnome.settings-daemon.plugins.media-keys';
+const SCHEMA_CUSTOM = 'org.gnome.settings-daemon.plugins.media-keys.custom-keybinding';
+const CAMINHO_CUSTOM_EVERVOX =
+    '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/evervox/';
+
+// Schemas nativos que guardam aceleradores (arrays 'as'). A varredura é
+// best-effort: schema ausente é ignorado, então serve de aviso, não de
+// verdade absoluta — o instalador ainda testa o grab de verdade como rede.
+const SCHEMAS_ATALHO = [
+    'org.gnome.desktop.wm.keybindings',
+    'org.gnome.settings-daemon.plugins.media-keys',
+    'org.gnome.shell.keybindings',
+    'org.gnome.mutter.keybindings',
+    'org.gnome.mutter.wayland.keybindings',
+];
+
+/** Comando absoluto do Toggle, preferindo o `evervox` do PATH. */
+function comandoToggle() {
+    const abs = GLib.find_program_in_path('evervox');
+    return `${abs ?? '/usr/bin/evervox'} toggle`;
+}
+
+/** Abre um `Gio.Settings` no schema relocável de custom-keybinding, ancorado
+ * em `caminho`. Devolve `null` se o schema não estiver instalado. */
+function settingsCustom(caminho) {
+    const schemaCustom = Gio.SettingsSchemaSource.get_default().lookup(SCHEMA_CUSTOM, true);
+    return schemaCustom ? new Gio.Settings({settings_schema: schemaCustom, path: caminho}) : null;
+}
+
+/** Lista os custom-keybindings ativos como `{caminho, settings}`, já abertos
+ * (fonte única para varrer/localizar/gravar sem repetir o lookup do schema). */
+function listarCustomKeybindings() {
+    const media = new Gio.Settings({schema_id: BASE_MEDIA_KEYS});
+    return media.get_strv('custom-keybindings')
+        .map(caminho => ({caminho, settings: settingsCustom(caminho)}))
+        .filter(entrada => entrada.settings !== null);
+}
+
+/** Localiza o custom-keybinding do EverVox já existente (por comando), para
+ * refletir a realidade da máquina (pode ter sido criado como `custom0` à mão)
+ * em vez de assumir o path canônico. Devolve `{caminho, binding}`. */
+function encontrarAtalhoEverVox() {
+    for (const {caminho, settings} of listarCustomKeybindings()) {
+        if (/\bevervox\b/.test(settings.get_string('command')))
+            return {caminho, binding: settings.get_string('binding')};
+    }
+    return {caminho: CAMINHO_CUSTOM_EVERVOX, binding: ''};
+}
+
+/** Junta os aceleradores em uso pelo GNOME: schemas nativos + os
+ * custom-keybindings. Cada item é `{caminho, descricao, acelerador}`. */
+function coletarAtalhosDoSistema() {
+    const atalhos = [];
+    const fonte = Gio.SettingsSchemaSource.get_default();
+
+    for (const nomeSchema of SCHEMAS_ATALHO) {
+        const schema = fonte.lookup(nomeSchema, true);
+        if (!schema)
+            continue;
+        const settings = new Gio.Settings({settings_schema: schema});
+        for (const chave of schema.list_keys()) {
+            if (chave === 'custom-keybindings')
+                continue;
+            const chaveSchema = schema.get_key(chave);
+            if (chaveSchema.get_value_type().dup_string() !== 'as')
+                continue;
+            const descricao = chaveSchema.get_summary() || chave;
+            for (const acel of settings.get_strv(chave)) {
+                if (acel && !acel.startsWith('/'))
+                    atalhos.push({caminho: `${nomeSchema}:${chave}`, descricao, acelerador: acel});
+            }
+        }
+    }
+
+    for (const {caminho, settings} of listarCustomKeybindings()) {
+        const binding = settings.get_string('binding');
+        if (binding)
+            atalhos.push({caminho, descricao: settings.get_string('name') || 'Atalho personalizado', acelerador: binding});
+    }
+
+    return atalhos;
+}
+
+/** Grava (ou limpa, com `acelerador === ''`) o atalho do EverVox no gsettings,
+ * garantindo que o path esteja na lista de custom-keybindings. Aplica na hora
+ * (o gsd-media-keys re-grab sozinho) — independente do botão Salvar. */
+function registrarAtalhoEverVox(caminho, acelerador) {
+    const media = new Gio.Settings({schema_id: BASE_MEDIA_KEYS});
+    const lista = media.get_strv('custom-keybindings');
+    if (!lista.includes(caminho)) {
+        lista.push(caminho);
+        media.set_strv('custom-keybindings', lista);
+    }
+    const s = settingsCustom(caminho);
+    s.set_string('name', 'EverVox Toggle');
+    s.set_string('command', comandoToggle());
+    s.set_string('binding', acelerador);
+}
+
+/** Só teclas de função (F1–F35) valem sem modificador — assim o usuário não
+ * "captura" uma letra solta e sequestra o teclado. */
+function aceitavelSemModificador(keyval) {
+    return keyval >= Gdk.KEY_F1 && keyval <= Gdk.KEY_F35;
+}
+
+const KEYVALS_MODIFICADOR = new Set([
+    Gdk.KEY_Control_L, Gdk.KEY_Control_R, Gdk.KEY_Alt_L, Gdk.KEY_Alt_R,
+    Gdk.KEY_Shift_L, Gdk.KEY_Shift_R, Gdk.KEY_Super_L, Gdk.KEY_Super_R,
+    Gdk.KEY_Meta_L, Gdk.KEY_Meta_R, Gdk.KEY_Hyper_L, Gdk.KEY_Hyper_R,
+    Gdk.KEY_ISO_Level3_Shift, Gdk.KEY_Caps_Lock, Gdk.KEY_Num_Lock,
+]);
+
+/** Abre um diálogo que captura a próxima combinação. Chama `aoCapturar(acel)`
+ * com a string no formato gsettings, '' para limpar (Backspace), ou nada se
+ * cancelado (Esc). */
+function capturarAtalho(janelaPai, aoCapturar) {
+    const dialogo = new Adw.MessageDialog({
+        transient_for: janelaPai,
+        modal: true,
+        heading: 'Definir atalho',
+        body: 'Aperte a nova combinação de teclas.\nEsc cancela · Backspace limpa o atalho.',
+    });
+    dialogo.add_response('cancelar', 'Cancelar');
+
+    const controlador = new Gtk.EventControllerKey();
+    controlador.connect('key-pressed', (_c, keyval, _keycode, state) => {
+        if (KEYVALS_MODIFICADOR.has(keyval))
+            return Gdk.EVENT_STOP;
+        if (keyval === Gdk.KEY_Escape && state === 0) {
+            dialogo.close();
+            return Gdk.EVENT_STOP;
+        }
+        if (keyval === Gdk.KEY_BackSpace && state === 0) {
+            dialogo.close();
+            aoCapturar('');
+            return Gdk.EVENT_STOP;
+        }
+        const mascara = state & Gtk.accelerator_get_default_mod_mask();
+        if (mascara === 0 && !aceitavelSemModificador(keyval))
+            return Gdk.EVENT_STOP; // exige modificador (salvo F1–F35)
+        if (!Gtk.accelerator_valid(keyval, mascara))
+            return Gdk.EVENT_STOP;
+        dialogo.close();
+        aoCapturar(Gtk.accelerator_name(keyval, mascara));
+        return Gdk.EVENT_STOP;
+    });
+    dialogo.add_controller(controlador);
+    dialogo.present();
+}
+
+function grupoAtalho(janela) {
+    const grupo = new Adw.PreferencesGroup({
+        title: 'Atalho de teclado',
+        description: 'Tecla global que liga/desliga o Ditado. Vale na hora, sem precisar Salvar.',
+    });
+    const estado = encontrarAtalhoEverVox();
+
+    const linha = new Adw.ActionRow({
+        title: 'Atalho do Toggle',
+        subtitle: 'Evite combinações já usadas pelo GNOME (o atalho não dispara).',
+    });
+
+    const rotulo = new Gtk.ShortcutLabel({valign: Gtk.Align.CENTER, disabled_text: 'Nenhum atalho'});
+    rotulo.set_accelerator(estado.binding);
+    linha.add_suffix(rotulo);
+
+    const aplicar = (acel) => {
+        registrarAtalhoEverVox(estado.caminho, acel);
+        rotulo.set_accelerator(acel);
+    };
+
+    const botao = new Gtk.Button({label: 'Definir…', valign: Gtk.Align.CENTER});
+    botao.connect('clicked', () => {
+        capturarAtalho(janela, (acel) => {
+            if (acel === '') {
+                aplicar('');
+                return;
+            }
+            const conflito = detectarConflito(acel, coletarAtalhosDoSistema(), estado.caminho);
+            if (conflito)
+                confirmarConflitoAtalho(janela, conflito, () => aplicar(acel));
+            else
+                aplicar(acel);
+        });
+    });
+    linha.add_suffix(botao);
+
+    grupo.add(linha);
+    return grupo;
+}
+
+function confirmarConflitoAtalho(janela, conflito, aoUsarMesmoAssim) {
+    const dialogo = new Adw.MessageDialog({
+        transient_for: janela,
+        heading: 'Atalho já em uso',
+        body: `Essa combinação já pertence a “${conflito.descricao}”. `
+            + 'O GNOME dá prioridade ao atalho existente, então o do EverVox pode não disparar. '
+            + 'Deseja usar mesmo assim?',
+    });
+    dialogo.add_response('cancelar', 'Escolher outro');
+    dialogo.add_response('usar', 'Usar mesmo assim');
+    dialogo.set_response_appearance('usar', Adw.ResponseAppearance.DESTRUCTIVE);
+    dialogo.connect('response', (_d, resposta) => {
+        if (resposta === 'usar')
+            aoUsarMesmoAssim();
+    });
+    dialogo.present();
+}
+
 function grupoIdiomas(config) {
     const grupo = new Adw.PreferencesGroup({title: 'Idiomas'});
 
@@ -479,6 +698,7 @@ export function preencherJanelaDePreferencias(window, gruposIniciais = []) {
     const pagina = new Adw.PreferencesPage();
     for (const grupo of gruposIniciais)
         pagina.add(grupo);
+    pagina.add(grupoAtalho(window));
     pagina.add(grupoIdiomas(config));
     pagina.add(grupoChaves());
     pagina.add(grupoEngine(config));

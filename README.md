@@ -87,9 +87,10 @@ O script:
 4. Instala a regra udev que libera `/dev/uinput` para o grupo `input` e
    adiciona seu usuário a esse grupo, se ainda não estiver.
 5. Registra um atalho de teclado do GNOME apontando para `evervox toggle`
-   (default `<Control><Alt>d`; troque com a variável `EVERVOX_ATALHO` antes
-   de rodar o script, ou depois em Configurações > Teclado > Atalhos
-   personalizados).
+   (default `<Control><Alt>space`; troque com a variável `EVERVOX_ATALHO`
+   antes de rodar o script, ou depois em Configurações > Teclado > Atalhos
+   personalizados). Se a combinação já pertencer a um atalho nativo do GNOME,
+   o script detecta a recusa do grab e cai automaticamente para uma livre.
 
 Se o script avisar que é preciso **relogar a sessão** (grupo `input` novo,
 ou a extensão não pôde ser habilitada automaticamente), faça isso antes de
