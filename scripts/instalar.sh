@@ -7,9 +7,12 @@
 # Uso: ./scripts/instalar.sh
 #
 # Variáveis de ambiente opcionais:
-#   EVERVOX_ATALHO — combinação de teclas do Toggle (default: <Control><Alt>d)
+#   EVERVOX_ATALHO — combinação de teclas do Toggle (default: <Control><Alt>space)
 #                    pode ser trocada depois em Configurações > Teclado >
-#                    Atalhos personalizados.
+#                    Atalhos personalizados. Evite combinações já usadas pelo
+#                    GNOME (ex.: <Control><Alt>d é "mostrar a área de trabalho";
+#                    Super sozinho/Super+Espaço são reservados pelo Shell): o
+#                    Mutter recusa o grab e o atalho nunca dispara.
 set -euo pipefail
 
 DIR_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,7 +20,10 @@ BIN_DIR="$HOME/.local/bin"
 EXT_UUID="evervox@evervox.local"
 EXT_DIR="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
-ATALHO="${EVERVOX_ATALHO:-<Control><Alt>d}"
+ATALHO="${EVERVOX_ATALHO:-<Control><Alt>space}"
+# Combinações de reserva (testadas como livres num Ubuntu GNOME padrão) caso a
+# escolhida colida com um atalho nativo e o gsd-media-keys recuse o grab.
+ATALHOS_RESERVA=("<Control><Alt>space" "<Control><Super>space" "<Control><Alt>v" "<Control><Alt>j")
 PRECISA_RELOGAR=0
 
 log() { echo "==> $*"; }
@@ -121,6 +127,22 @@ configurar_uinput() {
     fi
 }
 
+# O EverVox não captura teclas: ele delega a combinação ao GNOME. Se ela já
+# pertence a um atalho nativo, o gsd-media-keys falha o grab ("Failed to grab
+# accelerator") e a tecla nunca chega ao 'evervox toggle', sem aviso nenhum.
+# Esta função detecta esse conflito lendo o journal do gsd-media-keys.
+# Retorno: 0 = conflitou; 1 = grab aceito; 2 = não deu para verificar.
+atalho_conflitou() {
+    local desde="$1"
+    command -v journalctl >/dev/null 2>&1 || return 2
+    sleep 2  # o re-grab do gsd-media-keys é assíncrono
+    if journalctl --user _COMM=gsd-media-keys --since "$desde" 2>/dev/null \
+        | grep -q "Failed to grab accelerator.*custom-keybindings/evervox/"; then
+        return 0
+    fi
+    return 1
+}
+
 registrar_atalho() {
     if ! command -v gsettings >/dev/null 2>&1; then
         aviso "'gsettings' não encontrado; registre o atalho manualmente em Configurações > Teclado, apontando para '$BIN_DIR/evervox toggle'."
@@ -145,8 +167,35 @@ registrar_atalho() {
     local base_atalho="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$caminho_atalho"
     gsettings set "$base_atalho" name "EverVox Toggle"
     gsettings set "$base_atalho" command "$BIN_DIR/evervox toggle"
-    gsettings set "$base_atalho" binding "$ATALHO"
-    log "Atalho registrado: $ATALHO -> evervox toggle"
+
+    if ! command -v journalctl >/dev/null 2>&1; then
+        aviso "sem 'journalctl' para conferir conflitos: se '$ATALHO' não disparar, ele pode colidir com um atalho nativo do GNOME — troque em Configurações > Teclado."
+    fi
+
+    # Tenta o atalho pedido; se o Mutter recusar o grab, cai para as reservas
+    # até uma pegar. atalho_conflitou devolve 2 quando não dá para verificar
+    # (sem journalctl) — nesse caso aceitamos o pedido e seguimos.
+    local candidatos=("$ATALHO" "${ATALHOS_RESERVA[@]}")
+    local escolhido="" c desde
+    for c in "${candidatos[@]}"; do
+        desde="$(date '+%Y-%m-%d %H:%M:%S')"
+        gsettings set "$base_atalho" binding "$c"
+        if atalho_conflitou "$desde"; then
+            aviso "'$c' já é usado por um atalho nativo do GNOME (grab recusado); tentando outra combinação..."
+            continue
+        fi
+        escolhido="$c"
+        break
+    done
+
+    if [ -n "$escolhido" ]; then
+        log "Atalho registrado: $escolhido -> evervox toggle"
+        if [ "$escolhido" != "$ATALHO" ]; then
+            aviso "o atalho pedido ($ATALHO) conflitava; ficou em '$escolhido'. Troque em Configurações > Teclado > Atalhos personalizados se preferir."
+        fi
+    else
+        aviso "todas as combinações testadas conflitam com atalhos nativos; registre uma livre à mão em Configurações > Teclado, apontando para '$BIN_DIR/evervox toggle'."
+    fi
 }
 
 verificar_pre_requisitos
