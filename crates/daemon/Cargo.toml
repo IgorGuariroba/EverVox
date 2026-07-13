@@ -64,6 +64,7 @@ assets = [
     ["../../gnome-extension/extension.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../gnome-extension/prefs.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../gnome-extension/preferencias_ui.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
+    ["../../gnome-extension/atalho.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../gnome-extension/aplicativo_preferencias.js", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../gnome-extension/metadata.json", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
     ["../../gnome-extension/stylesheet.css", "usr/share/gnome-shell/extensions/evervox@evervox.local/", "644"],
