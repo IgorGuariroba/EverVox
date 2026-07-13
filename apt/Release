@@ -1,22 +1,22 @@
 Architectures: amd64
-Date: Sun, 12 Jul 2026 21:08:58 +0000
+Date: Mon, 13 Jul 2026 13:05:29 +0000
 Description: Repositório APT do EverVox (ditado por voz para Ubuntu GNOME/Wayland)
 Label: EverVox
 Origin: EverVox
 Suite: estavel
 MD5Sum:
- 3ae0f47464c56c260376dad0338998a0             2282 Packages
- e2e54312e0aff06cd34db8bddce334c2              889 Packages.gz
- b6dca54f8da3a740204ce37532bc359f              189 Release
+ f220632b77770fed6546fa606dac108b             3425 Packages
+ 3b6bd498683bc5ff8bc137bf5dbe876e             1014 Packages.gz
+ e0fccda19dde72be40bb216c487a5f0a              189 Release
 SHA1:
- 4d9c1534b5c3dd2bb4330fdf0cd4930c50926ed9             2282 Packages
- 1422ee82161b5609b392f21a8cfaf9dfcd16ef69              889 Packages.gz
- e2211b901a4d3c5d247a7d7ad71d461c841845da              189 Release
+ f21a0c492554c0078aa919b84a471540717f63cc             3425 Packages
+ 40741ed48f5ac341c2da4d2f770ffc93a32b6e8a             1014 Packages.gz
+ 33e1af9ee895742a0828c79f8113e86bf0d5ce61              189 Release
 SHA256:
- fe353d57fa1b1f078da38e9709d37890bc30e9f3bfbfa85be5cada8e5cd99d8c             2282 Packages
- e5951cd9cd5e9bcde3326014d5fadf9b672e3a8ddc0342d7bbcf2813cb4091b3              889 Packages.gz
- 31db7acd098c7e2d0efbaf575fb7d9debf2b6789bf99a3135d24096139dcbc07              189 Release
+ 57d985d8ab7cf25c0327f6367f8d300d98da8e451e5aecfbf51aee481aa3e79b             3425 Packages
+ 17fe7c7d16331e32f90c480e0f901cad2f51e7a745e5cfad6113e2c7b95d2e1e             1014 Packages.gz
+ 493ba45524b182c80b99fc201aff6f4c2e2d34ee90bed02a2dacef00ffc89965              189 Release
 SHA512:
- 773a3505a69e91be42ba7ba7a4d559cd8203f5de95828337b081ea212d9afbdec655ce16a4bddf778cb0b881adfb48a5903122b11cebb0e9fc8f210a273a4b20             2282 Packages
- 8a47c9af10bec4448be08b5b9919f5a7cee346c1b30114a71bd2ee6d824b7e5eb83a31a64e4f0398c20b9f8b6a50364cd0be31fb9e9f3644472324da87b71ad8              889 Packages.gz
- 990b982bd662c4db56e5c56090278527c12d069a9e8e738684fdf9eda885221ceb7c0c7db514a963e8d44c6eb957136bf74b8cea6b06e22af2e06c4e97d94217              189 Release
+ 84c98be0f954b9d184c8d38e2d72b3a5257243f421e904a6c177a41e13a2aec51fbf5610d1725a902fd1f9d8cdbb39981f8180cd0f593ad6b4c6b9a65d98808b             3425 Packages
+ 793c4da190a569add884e7fd548cacc88d9c2c3840120b328ebcb585a955f8418828fc4511f3a1a9fb12b59a117f9cc8d2aca0b93bd76b68436e678a91bc93f9             1014 Packages.gz
+ 86ced35271b6f0e040ecb277903ab8e7e0ee9d80b9237f2dd0a9dd027026ab54fffe555a4c306abb0b84a14a0c9ab7bc4eb2316a789aaa3a5cca25f59aad0b13              189 Release
