@@ -25,6 +25,32 @@ Description: Ditado por voz para Ubuntu (GNOME/Wayland)
  teclado.
 
 Package: evervox
+Version: 0.1.11-1
+Architecture: amd64
+Maintainer: Igor R. Guariroba <1g0r.guari@gmail.com>
+Installed-Size: 15903
+Depends: libasound2t64 (>= 1.0.29), libc6 (>= 2.39), libstdc++6 (>= 11)
+Recommends: gnome-shell (>= 45), gjs
+Filename: ./evervox_0.1.11-1_amd64.deb
+Size: 3859108
+MD5sum: 5e52912dfef83007324db5541b77ac16
+SHA1: d972e9f78bc7b35644c3408c73d7fe78fb0bdb14
+SHA256: b567d819f4825b96d7d2b53d93dc0b840c5aa878c83b9aba1b048cf1a9ab5eb0
+Section: sound
+Priority: optional
+Homepage: https://github.com/IgorGuariroba/EverVox
+Description: Ditado por voz para Ubuntu (GNOME/Wayland)
+ Ditado por voz livre e focado em privacidade para Ubuntu com GNOME Shell
+ em Wayland. Um atalho de teclado captura a fala em qualquer app; o EverVox
+ transcreve tudo no seu computador (whisper.cpp), sem enviar nada para a
+ nuvem, e entrega o texto ao campo focado. Engine cloud (OpenAI), limpeza
+ por LLM (OpenAI/Anthropic) e troca de idioma entre fala e texto existem
+ como recursos opcionais.
+ Depois de instalar, rode 'evervox-pos-instalar' para concluir os passos
+ que dependem do seu login: grupo input, daemon, overlay e atalho de
+ teclado.
+
+Package: evervox
 Version: 0.1.7-1
 Architecture: amd64
 Maintainer: Igor R. Guariroba <1g0r.guari@gmail.com>
